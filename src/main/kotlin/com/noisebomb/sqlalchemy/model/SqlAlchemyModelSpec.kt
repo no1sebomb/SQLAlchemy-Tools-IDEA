@@ -32,6 +32,7 @@ class SqlAlchemyColumnSpec(
     var type: SqlAlchemyColumnType = SqlAlchemyColumnType.INTEGER,
     var primaryKey: Boolean = false,
     var nullable: Boolean = true,
+    var unique: Boolean = false,
     var defaultExpression: String = "",
     var comment: String = ""
 )
@@ -40,6 +41,8 @@ data class SqlAlchemyModelSpec(
     val mode: SqlAlchemyGenerationMode,
     val modelName: String,
     val tableName: String,
+    val fileName: String,
+    val modelComment: String,
     val columns: List<SqlAlchemyColumnSpec>
 )
 

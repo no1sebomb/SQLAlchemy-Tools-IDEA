@@ -23,6 +23,9 @@ object SqlAlchemyCodeGenerator {
             append("\n")
             append("from db.base import Base\n\n")
             append("class ${spec.modelName}(Base):\n")
+            if (spec.modelComment.isNotBlank()) {
+                append("    \"\"\"${escapeDocString(spec.modelComment.trim())}\"\"\"\n")
+            }
             append("    __tablename__ = \"${spec.tableName}\"\n\n")
             append(body)
             append('\n')
@@ -39,6 +42,10 @@ object SqlAlchemyCodeGenerator {
 
         if (!column.nullable || column.primaryKey) {
             args += "nullable=False"
+        }
+
+        if (column.unique) {
+            args += "unique=True"
         }
 
         if (column.defaultExpression.isNotBlank()) {
@@ -69,5 +76,7 @@ object SqlAlchemyCodeGenerator {
     }
 
     private fun escapeString(value: String): String = value.replace("\\", "\\\\").replace("\"", "\\\"")
+
+    private fun escapeDocString(value: String): String = value.replace("\"\"\"", "\\\"\\\"\\\"")
 }
 

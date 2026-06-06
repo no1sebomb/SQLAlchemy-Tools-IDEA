@@ -30,13 +30,13 @@ class GenerateModelAction : AnAction(), DumbAware {
             return
         }
 
-        val dialog = GenerateModelDialog(project)
+        val dialog = GenerateModelDialog(project, targetDirectory)
         if (!dialog.showAndGet()) {
             return
         }
 
         val spec = dialog.getModelSpec()
-        val fileName = "${spec.tableName}.py"
+        val fileName = spec.fileName
         if (targetDirectory.findFile(fileName) != null) {
             Messages.showErrorDialog(project, "File '$fileName' already exists in the selected directory.", "SQLAlchemy Model")
             return
