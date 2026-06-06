@@ -14,8 +14,8 @@ class GenerateModelDialog(
 
     init {
         title = "Generate SQLAlchemy Model"
-        setSize(600, 400)
-        isResizable = false
+//        setSize(600, 400)
+//        isResizable = false
 
         init()
     }

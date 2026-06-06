@@ -14,6 +14,16 @@ class ColumnTableModel(
     override fun getColumnCount() = columnsMeta.size
     override fun getColumnName(col: Int) = columnsMeta[col]
 
+    override fun getColumnClass(columnIndex: Int): Class<*> {
+        return when (columnIndex) {
+            1 -> ColumnType::class.java
+            2 -> Boolean::class.java  // PK
+            3 -> Boolean::class.java  // Nullable
+            4 -> Boolean::class.java  // Unique
+            else -> String::class.java
+        }
+    }
+
     override fun getValueAt(row: Int, col: Int): Any {
         val c = columns[row]
         return when (col) {
