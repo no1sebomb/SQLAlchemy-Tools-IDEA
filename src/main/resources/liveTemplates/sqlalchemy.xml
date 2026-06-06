@@ -1,0 +1,57 @@
+<templateSet group="sqlalchemy">
+    <template name="colint" value=": Mapped[int] = mapped_column(Integer)" description="Integer column" toReformat="true" toShortenFQNames="true">
+        <context>
+            <option name="PYTHON_CLASS" value="true"/>
+        </context>
+    </template>
+
+    <template name="colint_legacy" value=": Mapped[int] = Column(Integer)" description="Integer column (Legacy)" toReformat="true" toShortenFQNames="true">
+        <context>
+            <option name="PYTHON_CLASS" value="true"/>
+        </context>
+    </template>
+
+    <template name="colstr" value=": Mapped[str] = mapped_column(String)" description="String column">
+        <context>
+            <option name="PYTHON_CLASS" value="true"/>
+        </context>
+    </template>
+
+    <template name="colstr_legacy" value=": Mapped[str] = Column(String)" description="String column (Legacy)">
+        <context>
+            <option name="PYTHON_CLASS" value="true"/>
+        </context>
+    </template>
+
+    <template name="col" value=": Mapped[$TYPE$] = mapped_column($SQL_TYPE$)" description="Column">
+        <variable name="TYPE" expression="" defaultValue="" alwaysStopAt="true"/>
+        <variable name="SQL_TYPE" expression="" defaultValue="" alwaysStopAt="true"/>
+        <context>
+            <option name="PYTHON_CLASS" value="true"/>
+        </context>
+    </template>
+
+    <template name="col_legacy" value=": Mapped[$TYPE$] = Column($SQL_TYPE$)" description="Column (Legacy)">
+        <variable name="TYPE" expression="" defaultValue="" alwaysStopAt="true"/>
+        <variable name="SQL_TYPE" expression="" defaultValue="" alwaysStopAt="true"/>
+        <context>
+            <option name="PYTHON_CLASS" value="true"/>
+        </context>
+    </template>
+
+    <template name="rel" value=": Mapped[&quot;$REL_TYPE$&quot;] = relationship(&quot;$REL_TYPE$&quot;, back_populates=&quot;$BACKREF$&quot;, uselist=False)" description="Relationship">
+        <variable name="REL_TYPE" expression="" defaultValue="" alwaysStopAt="true"/>
+        <variable name="BACKREF" expression="" defaultValue="None" alwaysStopAt="true"/>
+        <context>
+            <option name="PYTHON_CLASS" value="true"/>
+        </context>
+    </template>
+
+    <template name="relmany" value=": Mapped[list[&quot;$REL_TYPE$&quot;]] = relationship(&quot;$REL_TYPE$&quot;, back_populates=&quot;$BACKREF$&quot;, uselist=True)" description="Many relationship">
+        <variable name="REL_TYPE" expression="" defaultValue="" alwaysStopAt="true"/>
+        <variable name="BACKREF" expression="" defaultValue="None" alwaysStopAt="true"/>
+        <context>
+            <option name="PYTHON_CLASS" value="true"/>
+        </context>
+    </template>
+</templateSet>

@@ -1,0 +1,23 @@
+from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.types import Integer
+
+from db.base import Base
+
+#set($parts = $NAME.split("_"))
+#set($part = "")
+#set($CLASS_NAME = "")
+#foreach($part in $parts)
+    #set($CLASS_NAME = $CLASS_NAME + $part.substring(0,1).toUpperCase() + $part.substring(1).toLowerCase())
+#end
+
+class ${CLASS_NAME}(Base):
+    """
+    ${CLASS_NAME} model
+
+    Attributes:
+        id: Primary key
+    """
+
+    __tablename__ = "${NAME}"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
