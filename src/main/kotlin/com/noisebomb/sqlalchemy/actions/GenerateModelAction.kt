@@ -2,7 +2,7 @@ package com.noisebomb.sqlalchemy.actions
 
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
-import com.noisebomb.sqlalchemy.ui.GenerateModelDialog
+import com.noisebomb.sqlalchemy.ui.dialogs.GenerateModelDialog
 
 class GenerateModelAction : AnAction() {
 
