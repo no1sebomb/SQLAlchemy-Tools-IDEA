@@ -4,11 +4,33 @@
     <name>SQLAlchemy Templates</name>
     <vendor url="https://github.com/no1sebomb">noisebomb</vendor>
     <description><![CDATA[
-        This plugin add templates for SQLAlchemy.<br>
-        You can use bundled file template group "SQLAlchemy" to create new SQLAlchemy files with predefined structure and boilerplate code.<br>
-        The templates are designed to help you quickly set up new SQLAlchemy files, saving you time and ensuring consistency across your projects.<br>
-        To use the templates, simply go to "File" -> "New" -> "SQLAlchemy" and select the desired template from the list.
-        The new file will be created with the predefined structure and boilerplate code, allowing you to focus on writing your SQLAlchemy code without worrying about the initial setup.
+        <p>
+            Productivity toolkit for SQLAlchemy development in PyCharm and IntelliJ IDEA.
+        </p>
+
+        <p>
+            The plugin provides ready-to-use templates and code generation helpers for modern SQLAlchemy 2.0 projects.
+        </p>
+
+        <h3>Features</h3>
+        <ul>
+            <li>File templates for SQLAlchemy models</li>
+            <li>Live templates for columns, relationships, and common ORM patterns</li>
+            <li>SQLAlchemy model generation actions</li>
+            <li>SQLAlchemy 2.0 style with <code>Mapped[]</code> and <code>mapped_column()</code></li>
+        </ul>
+
+        <h3>Included Templates</h3>
+        <ul>
+            <li>Declarative model template</li>
+            <li>Column snippets</li>
+            <li>Relationship snippets</li>
+            <li>Common SQLAlchemy boilerplate</li>
+        </ul>
+
+        <p>
+            Designed to reduce repetitive typing and help maintain consistent SQLAlchemy code across projects.
+        </p>
     ]]></description>
 
     <depends>PythonCore</depends>
@@ -17,7 +39,7 @@
         <action id="GenerateSQLAlchemyModel"
                 class="com.noisebomb.sqlalchemy.actions.GenerateModelAction"
                 text="SQLAlchemy Model"
-                description="Generate a new SQLAlchemy model file from a template">
+                description="Generate a new SQLAlchemy model">
             <add-to-group group-id="NewGroup" anchor="last"/>
         </action>
     </actions>
