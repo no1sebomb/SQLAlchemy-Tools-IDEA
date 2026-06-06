@@ -90,9 +90,11 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
     private val tableNameLabel = JLabel("Table:")
     private val tableNameField = JTextField()
     private val modelCommentField = JBTextArea(3, 20)
+    private var descriptionScrollPane: JBScrollPane? = null
 
     // File section
     private val fileNameField = JTextField()
+    private val wrapLinesCheckBox = JBCheckBox("Wrap lines", false)
     private val attributeTypesMappingCheckBox = JBCheckBox("Attribute types mapping", true)
     private val useLegacyColumnsCheckBox = JBCheckBox("Use legacy columns", false)
 
@@ -129,6 +131,7 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
      private var previewVisible = true
      private var previewArrowLabel: JLabel? = null
      private var previewContentPanel: JPanel? = null
+     private var previewExpandedDividerLocation: Int? = null
 
      // Split panes (for deferred layout)
      private var attrsOptionsSplit: JSplitPane? = null
@@ -164,7 +167,7 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
         mode = selectedMode(),
         modelName = modelNameField.text.trim(),
         tableName = effectiveTableName(),
-        fileName = normalizedFileName(fileNameField.text),
+        fileName = fileNameField.text.trim(),
         modelComment = modelCommentField.text.trim(),
         attributeTypesMapping = attributeTypesMappingCheckBox.isSelected,
         useLegacyColumns = useLegacyColumnsCheckBox.isSelected,
@@ -183,7 +186,11 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
         return root
     }
 
-    override fun getPreferredSize(): Dimension = Dimension(JBUIScale.scale(1600), JBUIScale.scale(800))
+    override fun getDimensionServiceKey(): String? = null
+
+    override fun getInitialSize(): Dimension = Dimension(JBUIScale.scale(800), JBUIScale.scale(1000))
+
+    override fun getPreferredSize(): Dimension = Dimension(JBUIScale.scale(800), JBUIScale.scale(1000))
 
     override fun doValidate(): ValidationInfo? {
         val modelName = modelNameField.text.trim()
@@ -200,11 +207,13 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
             }
         }
 
-        val fileName = normalizedFileName(fileNameField.text)
-        if (fileName == ".py") return ValidationInfo("Filename is required", fileNameField)
-        val baseName = fileName.removeSuffix(".py")
-        if (!baseName.matches(Regex("[a-zA-Z_][a-zA-Z0-9_]*"))) {
-            return ValidationInfo("Filename should contain only letters, digits and underscore", fileNameField)
+        val fileName = fileNameField.text.trim()
+        if (fileName.isEmpty()) return ValidationInfo("Filename is required", fileNameField)
+        if (fileName.contains('/') || fileName.contains('\\')) {
+            return ValidationInfo("Filename should not include path separators", fileNameField)
+        }
+        if (!fileName.matches(Regex("[A-Za-z0-9._-]+"))) {
+            return ValidationInfo("Filename can include letters, digits, dot, dash and underscore", fileNameField)
         }
         if (targetDirectory?.findFile(fileName) != null) {
             return ValidationInfo("File '$fileName' already exists in the selected directory", fileNameField)
@@ -226,11 +235,11 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
         val panel = JPanel()
         panel.layout = BoxLayout(panel, BoxLayout.Y_AXIS)
         panel.isOpaque = false
-        panel.add(buildFixedSection("Type", buildTypeSectionBody(), 130))
+        panel.add(buildFixedSection("Type", buildTypeSectionBody(), 120))
         panel.add(Box.createVerticalStrut(4))
         panel.add(buildFixedSection("Table", buildTableSectionBody(), 210))
         panel.add(Box.createVerticalStrut(4))
-        panel.add(buildFixedSection("File", buildFileSectionBody(), 180))
+        panel.add(buildFixedSection("File", buildFileSectionBody(), 160))
         return panel
     }
 
@@ -273,13 +282,14 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
 
         val descriptionScroll = JBScrollPane(modelCommentField).apply {
             horizontalScrollBarPolicy = JBScrollPane.HORIZONTAL_SCROLLBAR_NEVER
-            verticalScrollBarPolicy = JBScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED
             preferredSize = Dimension(0, JBUIScale.scale(48))
-        }
+        }.also { descriptionScrollPane = it }
+        updateDescriptionScrollbarPolicy()
 
         // Large-input style: label on top, field below
         val descriptionPanel = JPanel(BorderLayout(0, JBUIScale.scale(4))).apply {
             isOpaque = false
+            border = JBUI.Borders.emptyTop(6)
             add(JLabel("Description:").apply {
                 foreground = UIUtil.getLabelForeground()
             }, BorderLayout.NORTH)
@@ -312,6 +322,7 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
         val form = FormBuilder.createFormBuilder()
             .setVerticalGap(6)
             .addLabeledComponent("Filename:", fileNameField)
+            .addComponent(wrapLinesCheckBox)
             .addComponent(attributeTypesMappingCheckBox)
             .addComponent(useLegacyColumnsCheckBox)
             .panel
@@ -330,7 +341,7 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
         val attributesPanel = buildAttributesPanel()
         val optionsPanel = buildOptionsPanel()
         attrsOptionsSplit = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, true, attributesPanel, optionsPanel).apply {
-            resizeWeight = 0.25
+            resizeWeight = 1.0 / 3.0
             dividerSize = 8
             border = JBUI.Borders.empty()
             // Don't set divider location here; defer to after layout
@@ -349,7 +360,7 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
     }
 
     private fun deferredSetDividerLocations() {
-        attrsOptionsSplit?.setDividerLocation(0.25)
+        attrsOptionsSplit?.setDividerLocation(1.0 / 3.0)
         verticalSplit?.setDividerLocation(0.55)
     }
 
@@ -427,7 +438,7 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
         return JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(0)
             add(buildSectionHeader("Options"), BorderLayout.NORTH)
-            add(form, BorderLayout.CENTER)
+            add(form, BorderLayout.NORTH)
         }
     }
 
@@ -524,7 +535,7 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
                 syncTextLater(tableNameField, toSnakeCase(text))
             }
             if (!fileNameUserEdited) {
-                syncTextLater(fileNameField, normalizedFileName(toSnakeCase(text)))
+                syncTextLater(fileNameField, suggestedFileName(text))
             }
             updatePreview()
         })
@@ -544,21 +555,29 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
     }
 
     private fun initFileSection() {
-        fileNameField.text = normalizedFileName(toSnakeCase(modelNameField.text))
+        fileNameField.text = ""
+        fileNameUserEdited = false
+        wrapLinesCheckBox.isSelected = true
         attributeTypesMappingCheckBox.isSelected = true
         useLegacyColumnsCheckBox.isSelected = false
 
         fileNameField.document.addDocumentListener(simpleListener {
             if (syncingFields) return@simpleListener
-            val normalized = normalizedFileName(fileNameField.text)
-            fileNameUserEdited = normalized != normalizedFileName(toSnakeCase(modelNameField.text))
-            if (fileNameField.text != normalized) {
-                syncTextLater(fileNameField, normalized)
+            if (fileNameField.text.trim().isEmpty()) {
+                fileNameUserEdited = false
+                updatePreview()
                 return@simpleListener
+            }
+            if (!fileNameUserEdited) {
+                val suggested = suggestedFileName(modelNameField.text)
+                if (fileNameField.text != suggested) {
+                    fileNameUserEdited = true
+                }
             }
             updatePreview()
         })
 
+        wrapLinesCheckBox.addActionListener { updatePreview() }
         attributeTypesMappingCheckBox.addActionListener { updatePreview() }
         useLegacyColumnsCheckBox.addActionListener { updatePreview() }
 
@@ -568,7 +587,18 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
     private fun initTableDescription() {
         modelCommentField.foreground = UIUtil.getTextFieldForeground()
         modelCommentField.background = UIUtil.getTextFieldBackground()
-        modelCommentField.document.addDocumentListener(simpleListener { updatePreview() })
+        modelCommentField.document.addDocumentListener(simpleListener {
+            updateDescriptionScrollbarPolicy()
+            updatePreview()
+        })
+    }
+
+    private fun updateDescriptionScrollbarPolicy() {
+        descriptionScrollPane?.verticalScrollBarPolicy = if (modelCommentField.text.isBlank()) {
+            JBScrollPane.VERTICAL_SCROLLBAR_NEVER
+        } else {
+            JBScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED
+        }
     }
 
     private fun updateTableNameFieldState() {
@@ -737,10 +767,35 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
     private fun togglePreview() {
         previewVisible = !previewVisible
         previewArrowLabel?.icon = if (previewVisible) UIUtil.getTreeExpandedIcon() else UIUtil.getTreeCollapsedIcon()
-        previewContentPanel?.let {
-            it.isVisible = previewVisible
-            it.parent?.revalidate()
-            it.parent?.repaint()
+        val split = verticalSplit ?: return
+        if (!previewVisible) {
+            // Remember expanded height so reopening restores previous preview size.
+            previewExpandedDividerLocation = split.dividerLocation
+        }
+
+        previewContentPanel?.isVisible = previewVisible
+        split.dividerSize = if (previewVisible) 8 else 0
+        split.revalidate()
+        split.repaint()
+
+        // Apply divider position after layout settles to avoid reopening in collapsed state.
+        SwingUtilities.invokeLater {
+            val s = verticalSplit ?: return@invokeLater
+            if (!previewVisible) {
+                // Collapse to bottom; header remains visible because content panel is hidden.
+                s.dividerLocation = s.maximumDividerLocation
+                return@invokeLater
+            }
+
+            val fallback = (s.height * 0.55).toInt()
+            val minPreviewHeight = JBUIScale.scale(180)
+            val upperBound = minOf(s.maximumDividerLocation, s.height - minPreviewHeight)
+            val clampedUpper = maxOf(s.minimumDividerLocation, upperBound)
+            val target = (previewExpandedDividerLocation ?: fallback)
+                .coerceIn(s.minimumDividerLocation, clampedUpper)
+            s.dividerLocation = target
+            s.revalidate()
+            s.repaint()
         }
     }
 
@@ -753,7 +808,7 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
             mode = selectedMode(),
             modelName = modelNameField.text.trim(),
             tableName = effectiveTableName(),
-            fileName = normalizedFileName(fileNameField.text),
+            fileName = fileNameField.text.trim(),
             modelComment = modelCommentField.text.trim(),
             attributeTypesMapping = attributeTypesMappingCheckBox.isSelected,
             useLegacyColumns = useLegacyColumnsCheckBox.isSelected,
@@ -797,10 +852,9 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
         .lowercase()
         .trim('_')
 
-    private fun normalizedFileName(value: String): String {
-        var normalized = value.trim().removeSuffix(".py")
-        normalized = toSnakeCase(normalized)
-        return if (normalized.isBlank()) ".py" else "$normalized.py"
+    private fun suggestedFileName(value: String): String {
+        val base = toSnakeCase(value.trim())
+        return if (base.isBlank()) "" else "$base.py"
     }
 
     private fun simpleListener(callback: () -> Unit): DocumentListener = object : DocumentListener {
