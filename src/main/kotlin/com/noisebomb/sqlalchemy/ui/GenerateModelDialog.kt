@@ -18,6 +18,8 @@ import com.intellij.openapi.ui.ValidationInfo
 import com.intellij.psi.PsiDirectory
 import com.intellij.ui.JBColor
 import com.intellij.ui.EditorTextField
+import com.intellij.ui.components.JBScrollPane
+import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.ToolbarDecorator
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBList
@@ -84,13 +86,14 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
     // Table section
     private val modelNameField = JTextField()
     private val tableNameDiffersCheckBox = JBCheckBox("Table name differs")
+    private val tableNameLabel = JLabel("Table name:")
     private val tableNameField = JTextField()
+    private val modelCommentField = JBTextArea(3, 20)
 
     // File section
     private val fileNameField = JTextField()
     private val attributeTypesMappingCheckBox = JBCheckBox("Attribute types mapping", true)
     private val useLegacyColumnsCheckBox = JBCheckBox("Use legacy columns", false)
-    private val modelCommentField = JTextField()
 
     // Attributes / options
     private val listModel = DefaultListModel<ModelListItem>()
@@ -141,6 +144,7 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
         initListModel()
         initTypeSection()
         initTableSection()
+        initTableDescription()
         initFileSection()
         initAttributesSection()
         applyMonospaceFontToInputs()
@@ -223,7 +227,7 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
         panel.isOpaque = false
         panel.add(buildFixedSection("Type", buildTypeSectionBody(), 130))
         panel.add(Box.createVerticalStrut(4))
-        panel.add(buildFixedSection("Table", buildTableSectionBody(), 150))
+        panel.add(buildFixedSection("Table", buildTableSectionBody(), 210))
         panel.add(Box.createVerticalStrut(4))
         panel.add(buildFixedSection("File", buildFileSectionBody(), 180))
         return panel
@@ -255,11 +259,45 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
     }
 
     private fun buildTableSectionBody(): JComponent {
+        modelCommentField.lineWrap = true
+        modelCommentField.wrapStyleWord = true
+        modelCommentField.rows = 2
+        modelCommentField.border = JBUI.Borders.empty(4, 6)
+
+        val tableNameIndentedPanel = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.emptyLeft(0)
+            add(tableNameField, BorderLayout.CENTER)
+        }
+
+        val tableNameRow = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.emptyLeft(10)
+            add(tableNameLabel.apply { border = JBUI.Borders.emptyRight(0) }, BorderLayout.WEST)
+            add(tableNameIndentedPanel, BorderLayout.CENTER)
+        }
+
+        val descriptionField = JBScrollPane(modelCommentField).apply {
+            horizontalScrollBarPolicy = JBScrollPane.HORIZONTAL_SCROLLBAR_NEVER
+            verticalScrollBarPolicy = JBScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED
+            preferredSize = Dimension(0, JBUIScale.scale(48))
+        }
+
+        val descriptionPanel = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            add(JLabel("Description:").apply {
+                foreground = UIUtil.getLabelForeground()
+                border = JBUI.Borders.emptyBottom(4)
+            }, BorderLayout.NORTH)
+            add(descriptionField, BorderLayout.CENTER)
+        }
+
         val form = FormBuilder.createFormBuilder()
             .setVerticalGap(6)
             .addLabeledComponent("Model name:", modelNameField)
             .addComponent(tableNameDiffersCheckBox)
-            .addLabeledComponent("Table:", tableNameField)
+            .addComponent(tableNameRow)
+            .addComponent(descriptionPanel)
             .panel
 
         return JPanel(BorderLayout()).apply {
@@ -274,7 +312,6 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
             .addLabeledComponent("Filename:", fileNameField)
             .addComponent(attributeTypesMappingCheckBox)
             .addComponent(useLegacyColumnsCheckBox)
-            .addLabeledComponent("Docs:", modelCommentField)
             .panel
 
         return JPanel(BorderLayout()).apply {
@@ -475,8 +512,8 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
 
     private fun initTableSection() {
         tableNameDiffersCheckBox.isSelected = false
-        tableNameField.isEnabled = false
         tableNameField.text = toSnakeCase(modelNameField.text)
+        updateTableNameFieldState()
 
         modelNameField.document.addDocumentListener(simpleListener {
             if (syncingFields) return@simpleListener
@@ -491,7 +528,7 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
         })
 
         tableNameDiffersCheckBox.addActionListener {
-            tableNameField.isEnabled = tableNameDiffersCheckBox.isSelected
+            updateTableNameFieldState()
             if (!tableNameDiffersCheckBox.isSelected) {
                 syncTextLater(tableNameField, toSnakeCase(modelNameField.text))
             }
@@ -508,7 +545,6 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
         fileNameField.text = normalizedFileName(toSnakeCase(modelNameField.text))
         attributeTypesMappingCheckBox.isSelected = true
         useLegacyColumnsCheckBox.isSelected = false
-        modelCommentField.foreground = UIUtil.getLabelDisabledForeground()
 
         fileNameField.document.addDocumentListener(simpleListener {
             if (syncingFields) return@simpleListener
@@ -523,9 +559,36 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
 
         attributeTypesMappingCheckBox.addActionListener { updatePreview() }
         useLegacyColumnsCheckBox.addActionListener { updatePreview() }
-        modelCommentField.document.addDocumentListener(simpleListener { updatePreview() })
 
         applyMonospaceFontToInputs()
+    }
+
+    private fun initTableDescription() {
+        modelCommentField.foreground = UIUtil.getTextFieldForeground()
+        modelCommentField.background = UIUtil.getTextFieldBackground()
+        modelCommentField.document.addDocumentListener(simpleListener { updatePreview() })
+    }
+
+    private fun updateTableNameFieldState() {
+        val enabled = tableNameDiffersCheckBox.isSelected
+        if (enabled) {
+            tableNameField.isEnabled = true
+            tableNameField.isEditable = true
+            tableNameField.isFocusable = true
+            tableNameField.foreground = UIUtil.getTextFieldForeground()
+            tableNameField.background = UIUtil.getTextFieldBackground()
+            tableNameField.disabledTextColor = UIUtil.getTextFieldForeground()
+            tableNameLabel.foreground = UIUtil.getLabelForeground()
+        } else {
+            // Keep component enabled to apply custom palette while preventing edits/focus.
+            tableNameField.isEnabled = true
+            tableNameField.isEditable = false
+            tableNameField.isFocusable = false
+            tableNameField.foreground = UIUtil.getLabelDisabledForeground()
+            tableNameField.background = UIUtil.getPanelBackground()
+            tableNameField.disabledTextColor = UIUtil.getLabelDisabledForeground()
+            tableNameLabel.foreground = UIUtil.getLabelDisabledForeground()
+        }
     }
 
     private fun initAttributesSection() {
@@ -759,14 +822,16 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
     private fun applyMonospaceFontToInputs() {
         val scheme = EditorColorsManager.getInstance().globalScheme
         val mono = Font(scheme.editorFontName, Font.PLAIN, scheme.editorFontSize)
-        listOf(modelNameField, tableNameField, fileNameField, modelCommentField, columnNameField, commentField).forEach {
+        listOf(modelNameField, tableNameField, fileNameField, columnNameField, commentField).forEach {
             it.font = mono
         }
+        modelCommentField.font = mono
         columnTypeCombo.font = mono
         defaultExpressionField.font = mono
         previewEditor.component.font = mono
         commentField.foreground = UIUtil.getLabelDisabledForeground()
-        modelCommentField.foreground = UIUtil.getLabelDisabledForeground()
+        modelCommentField.foreground = UIUtil.getTextFieldForeground()
+        modelCommentField.background = UIUtil.getTextFieldBackground()
     }
 
     private fun JSplitPane.installInvisibleDivider() {
