@@ -16,16 +16,15 @@ import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.ValidationInfo
 import com.intellij.psi.PsiDirectory
-import com.intellij.ui.AnActionButtonUpdater
+import com.intellij.ui.JBColor
 import com.intellij.ui.EditorTextField
-import com.intellij.ui.IdeBorderFactory
 import com.intellij.ui.ToolbarDecorator
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBList
-import com.intellij.ui.components.JBPanel
 import com.intellij.ui.components.JBRadioButton
 import com.intellij.ui.dsl.builder.panel
 import com.intellij.ui.scale.JBUIScale
+import com.intellij.openapi.util.Disposer
 import com.intellij.util.ui.FormBuilder
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
@@ -41,15 +40,21 @@ import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Font
+import javax.swing.plaf.basic.BasicSplitPaneDivider
+import javax.swing.plaf.basic.BasicSplitPaneUI
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.awt.Graphics
+import javax.swing.Box
+import javax.swing.BoxLayout
 import javax.swing.DefaultListCellRenderer
 import javax.swing.DefaultListModel
 import javax.swing.DefaultListSelectionModel
-import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JLabel
+import javax.swing.JList
 import javax.swing.JPanel
+import javax.swing.JSplitPane
 import javax.swing.JTextField
 import javax.swing.ListSelectionModel
 import javax.swing.SwingConstants
@@ -71,122 +76,171 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
 
     private val pythonFileType = FileTypeManager.getInstance().getFileTypeByExtension("py")
 
+    // Type section
     private val manualRadio = JBRadioButton("Manual", true)
     private val dataSourceRadio = JBRadioButton("From Data Source (coming soon)")
     private val sqlRadio = JBRadioButton("From SQL (coming soon)")
 
+    // Table section
     private val modelNameField = JTextField()
+    private val tableNameDiffersCheckBox = JBCheckBox("Table name differs")
     private val tableNameField = JTextField()
+
+    // File section
     private val fileNameField = JTextField()
+    private val attributeTypesMappingCheckBox = JBCheckBox("Attribute types mapping", true)
+    private val useLegacyColumnsCheckBox = JBCheckBox("Use legacy columns", false)
     private val modelCommentField = JTextField()
 
+    // Attributes / options
     private val listModel = DefaultListModel<ModelListItem>()
     private val itemList = JBList(listModel)
 
     private val columnNameField = JTextField()
-    private val columnTypeCombo: JComboBox<SqlAlchemyColumnType> = ComboBox(SqlAlchemyColumnType.entries.toTypedArray())
+    private val columnTypeCombo = ComboBox(SqlAlchemyColumnType.entries.toTypedArray())
     private val primaryKeyCheckbox = JBCheckBox("Primary key")
     private val nullableCheckbox = JBCheckBox("Nullable")
     private val uniqueCheckbox = JBCheckBox("Unique")
     private val defaultExpressionField = EditorTextField("", project, pythonFileType)
     private val commentField = JTextField()
 
-    // Preview — real Editor so its component is a native, scrollable JScrollPane
-    private val previewEditorFactory = EditorFactory.getInstance()
-    private val previewDocument = previewEditorFactory.createDocument("")
-    private val previewEditorImpl: Editor = previewEditorFactory.createViewer(previewDocument, project).also { editor ->
-        editor.settings.apply {
-            isLineNumbersShown = false
-            isFoldingOutlineShown = false
-            isRightMarginShown = false
-            isVirtualSpace = false
-        }
-        (editor as? EditorEx)?.highlighter = EditorHighlighterFactory.getInstance()
-            .createEditorHighlighter(project, pythonFileType)
-    }
+     // Preview
+     private val previewFactory = EditorFactory.getInstance()
+     private val previewDocument = previewFactory.createDocument("")
+     private val previewEditor: Editor = previewFactory.createViewer(previewDocument, project).also { editor ->
+         editor.settings.apply {
+             isLineNumbersShown = true
+             isFoldingOutlineShown = false
+             isRightMarginShown = false
+             isVirtualSpace = false
+         }
+         (editor as? EditorEx)?.highlighter = EditorHighlighterFactory.getInstance()
+             .createEditorHighlighter(project, pythonFileType)
+     }
+     private val previewCardLayout = CardLayout()
+     private val previewCardPanel = JPanel(previewCardLayout)
+     private val previewPlaceholderCard = "placeholder"
+     private val previewEditorCard = "editor"
+     private val listenersDisposable = Disposer.newDisposable()
+     private var previewVisible = true
+     private var previewArrowLabel: JLabel? = null
+     private var previewContentPanel: JPanel? = null
 
-    private val previewCardLayout = CardLayout()
-    private val previewCardPanel = JPanel(previewCardLayout)
-    private val CARD_PLACEHOLDER = "placeholder"
-    private val CARD_EDITOR = "editor"
+     // Split panes (for deferred layout)
+     private var attrsOptionsSplit: JSplitPane? = null
+     private var verticalSplit: JSplitPane? = null
 
-    private var previewExpanded = true
-    private var previewArrowLabel: JLabel? = null
-    private var previewContentPanel: JPanel? = null
-
-    private var syncingNames = false
-    private var modelNameUserEdited = false
-    private var tableNameUserEdited = false
-    private var fileNameUserEdited = false
-    private var loadingColumnDetails = false
+     // Sync state
+     private var syncingFields = false
+     private var fileNameUserEdited = false
+     private var loadingColumnDetails = false
 
     init {
         title = "Create SQLAlchemy Model"
         setOKButtonText("Create")
         initListModel()
-        initRadioButtons()
-        initNamesSync()
-        initColumnsUiState()
+        initTypeSection()
+        initTableSection()
+        initFileSection()
+        initAttributesSection()
+        applyMonospaceFontToInputs()
         updatePreview()
         init()
         startTrackingValidation()
     }
 
     override fun dispose() {
-        previewEditorFactory.releaseEditor(previewEditorImpl)
+        Disposer.dispose(listenersDisposable)
+        previewFactory.releaseEditor(previewEditor)
         super.dispose()
     }
 
     fun getModelSpec(): SqlAlchemyModelSpec = SqlAlchemyModelSpec(
         mode = selectedMode(),
         modelName = modelNameField.text.trim(),
-        tableName = tableNameField.text.trim(),
+        tableName = effectiveTableName(),
         fileName = normalizedFileName(fileNameField.text),
         modelComment = modelCommentField.text.trim(),
+        attributeTypesMapping = attributeTypesMappingCheckBox.isSelected,
+        useLegacyColumns = useLegacyColumnsCheckBox.isSelected,
         columns = columnEntries()
     )
 
     override fun createCenterPanel(): JComponent {
-        val root = JBPanel<JBPanel<*>>(BorderLayout(0, JBUIScale.scale(10)))
+        val root = JPanel(BorderLayout(0, JBUIScale.scale(10)))
         root.border = JBUI.Borders.empty(8)
-        root.add(buildOptionsPanel(), BorderLayout.NORTH)
-        val center = JBPanel<JBPanel<*>>(BorderLayout(0, JBUIScale.scale(8)))
-        center.add(buildColumnsPanel(), BorderLayout.CENTER)
-        center.add(buildPreviewPanel(), BorderLayout.SOUTH)
-        root.add(center, BorderLayout.CENTER)
+        root.add(buildTopSectionsPanel(), BorderLayout.NORTH)
+        root.add(buildMainSplitPanel(), BorderLayout.CENTER)
+        // Defer divider locations until after layout
+        SwingUtilities.invokeLater {
+            deferredSetDividerLocations()
+        }
         return root
     }
 
+    override fun getPreferredSize(): Dimension = Dimension(JBUIScale.scale(1600), JBUIScale.scale(800))
+
     override fun doValidate(): ValidationInfo? {
         val modelName = modelNameField.text.trim()
-        val tableName = tableNameField.text.trim()
         if (modelName.isEmpty()) return ValidationInfo("Model name is required", modelNameField)
-        if (!modelName.matches(Regex("[A-Za-z][A-Za-z0-9_]*")))
+        if (!modelName.matches(Regex("[A-Za-z][A-Za-z0-9_]*"))) {
             return ValidationInfo("Model name should look like a Python class name", modelNameField)
-        if (tableName.isEmpty()) return ValidationInfo("Table name is required", tableNameField)
-        if (!tableName.matches(Regex("[a-zA-Z_][a-zA-Z0-9_]*")))
-            return ValidationInfo("Table name should contain only letters, digits and underscore", tableNameField)
+        }
+
+        if (tableNameDiffersCheckBox.isSelected) {
+            val tableName = tableNameField.text.trim()
+            if (tableName.isEmpty()) return ValidationInfo("Table name is required", tableNameField)
+            if (!tableName.matches(Regex("[a-zA-Z_][a-zA-Z0-9_]*"))) {
+                return ValidationInfo("Table name should contain only letters, digits and underscore", tableNameField)
+            }
+        }
+
         val fileName = normalizedFileName(fileNameField.text)
         if (fileName == ".py") return ValidationInfo("Filename is required", fileNameField)
         val baseName = fileName.removeSuffix(".py")
-        if (!baseName.matches(Regex("[a-zA-Z_][a-zA-Z0-9_]*")))
+        if (!baseName.matches(Regex("[a-zA-Z_][a-zA-Z0-9_]*"))) {
             return ValidationInfo("Filename should contain only letters, digits and underscore", fileNameField)
-        if (targetDirectory?.findFile(fileName) != null)
+        }
+        if (targetDirectory?.findFile(fileName) != null) {
             return ValidationInfo("File '$fileName' already exists in the selected directory", fileNameField)
+        }
+
         val cols = columnEntries()
         if (cols.isEmpty()) return ValidationInfo("At least one column is required", itemList)
-        val emptyName = cols.firstOrNull { it.name.isBlank() }
-        if (emptyName != null) return ValidationInfo("All columns must have a name", columnNameField)
+        if (cols.any { it.name.isBlank() }) return ValidationInfo("All columns must have a name", columnNameField)
         val dup = cols.groupBy { it.name.trim() }.entries.firstOrNull { it.key.isNotEmpty() && it.value.size > 1 }
         if (dup != null) return ValidationInfo("Duplicate column name: ${dup.key}", itemList)
         return null
     }
 
     // -----------------------------------------------------------------------
-    // Panel builders
+    // Top sections
     // -----------------------------------------------------------------------
 
-    private fun buildOptionsPanel(): JComponent {
+    private fun buildTopSectionsPanel(): JComponent {
+        val panel = JPanel()
+        panel.layout = BoxLayout(panel, BoxLayout.Y_AXIS)
+        panel.isOpaque = false
+        panel.add(buildFixedSection("Type", buildTypeSectionBody(), 130))
+        panel.add(Box.createVerticalStrut(4))
+        panel.add(buildFixedSection("Table", buildTableSectionBody(), 150))
+        panel.add(Box.createVerticalStrut(4))
+        panel.add(buildFixedSection("File", buildFileSectionBody(), 180))
+        return panel
+    }
+
+    private fun buildFixedSection(title: String, body: JComponent, fixedHeight: Int): JComponent {
+        val wrapper = JPanel(BorderLayout())
+        wrapper.border = JBUI.Borders.empty()
+        wrapper.add(buildSectionHeader(title), BorderLayout.NORTH)
+        wrapper.add(body, BorderLayout.CENTER)
+        wrapper.maximumSize = Dimension(Int.MAX_VALUE, JBUIScale.scale(fixedHeight))
+        wrapper.minimumSize = Dimension(0, JBUIScale.scale(fixedHeight))
+        wrapper.preferredSize = Dimension(0, JBUIScale.scale(fixedHeight))
+        return wrapper
+    }
+
+    private fun buildTypeSectionBody(): JComponent {
         val radios = panel {
             buttonsGroup {
                 row { cell(manualRadio) }
@@ -194,26 +248,79 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
                 row { cell(sqlRadio) }
             }
         }
-        val names = FormBuilder.createFormBuilder()
-            .setVerticalGap(6)
-            .addLabeledComponent("Table name:", tableNameField)
-            .addLabeledComponent("Model name:", modelNameField)
-            .addLabeledComponent("Filename:", fileNameField)
-            .addLabeledComponent("Comment / docs:", modelCommentField)
-            .panel
-        return JBPanel<JBPanel<*>>(BorderLayout(0, JBUIScale.scale(12))).apply {
+        return JPanel(BorderLayout()).apply {
+            border = JBUI.Borders.empty(4, 8, 8, 8)
             add(radios, BorderLayout.NORTH)
-            add(names, BorderLayout.SOUTH)
-            border = JBUI.Borders.emptyBottom(8)
         }
     }
 
-    private fun buildColumnsPanel(): JComponent {
+    private fun buildTableSectionBody(): JComponent {
+        val form = FormBuilder.createFormBuilder()
+            .setVerticalGap(6)
+            .addLabeledComponent("Model name:", modelNameField)
+            .addComponent(tableNameDiffersCheckBox)
+            .addLabeledComponent("Table:", tableNameField)
+            .panel
+
+        return JPanel(BorderLayout()).apply {
+            border = JBUI.Borders.empty(4, 8, 8, 8)
+            add(form, BorderLayout.NORTH)
+        }
+    }
+
+    private fun buildFileSectionBody(): JComponent {
+        val form = FormBuilder.createFormBuilder()
+            .setVerticalGap(6)
+            .addLabeledComponent("Filename:", fileNameField)
+            .addComponent(attributeTypesMappingCheckBox)
+            .addComponent(useLegacyColumnsCheckBox)
+            .addLabeledComponent("Docs:", modelCommentField)
+            .panel
+
+        return JPanel(BorderLayout()).apply {
+            border = JBUI.Borders.empty(4, 8, 8, 8)
+            add(form, BorderLayout.NORTH)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Main attributes/options + preview split
+    // -----------------------------------------------------------------------
+
+    private fun buildMainSplitPanel(): JComponent {
+        val attributesPanel = buildAttributesPanel()
+        val optionsPanel = buildOptionsPanel()
+        attrsOptionsSplit = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, true, attributesPanel, optionsPanel).apply {
+            resizeWeight = 0.25
+            dividerSize = 8
+            border = JBUI.Borders.empty()
+            // Don't set divider location here; defer to after layout
+            installInvisibleDivider()
+        }
+
+        val previewPanel = buildPreviewPanel()
+        verticalSplit = JSplitPane(JSplitPane.VERTICAL_SPLIT, true, attrsOptionsSplit, previewPanel).apply {
+            resizeWeight = 0.0
+            dividerSize = 8
+            border = JBUI.Borders.empty()
+            installInvisibleDivider()
+        }
+
+        return verticalSplit!!
+    }
+
+    private fun deferredSetDividerLocations() {
+        attrsOptionsSplit?.setDividerLocation(0.25)
+        verticalSplit?.setDividerLocation(0.55)
+    }
+
+    private fun buildAttributesPanel(): JComponent {
         itemList.selectionModel = object : DefaultListSelectionModel() {
-            init { selectionMode = ListSelectionModel.SINGLE_SELECTION }
+            init { selectionMode = SINGLE_SELECTION }
             override fun setSelectionInterval(i0: Int, i1: Int) {
-                if (i0 in 0 until listModel.size() && listModel.getElementAt(i0) is ColumnEntry)
+                if (i0 in 0 until listModel.size() && listModel.getElementAt(i0) is ColumnEntry) {
                     super.setSelectionInterval(i0, i1)
+                }
             }
         }
         itemList.cellRenderer = ModelListCellRenderer()
@@ -232,35 +339,42 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
                 if (idx >= 0 && listModel.getElementAt(idx) is ColumnEntry) {
                     listModel.remove(idx)
                     val newSel = findNearestColumn(idx)
-                    if (newSel >= 0) itemList.selectedIndex = newSel
+                    if (newSel >= 0) itemList.selectedIndex = newSel else loadSelectedColumn()
                     updatePreview()
                 }
             }
             .setMoveUpAction { moveColumn(-1) }
             .setMoveDownAction { moveColumn(1) }
-            .setMoveUpActionUpdater(AnActionButtonUpdater {
+            .setMoveUpActionUpdater {
                 val idx = itemList.selectedIndex
-                idx > 0 && listModel.getElementAt(idx) is ColumnEntry
-                        && listModel.getElementAt(idx - 1) is ColumnEntry
-            })
-            .setMoveDownActionUpdater(AnActionButtonUpdater {
+                idx > 0 && idx < listModel.size() && listModel.getElementAt(idx) is ColumnEntry && listModel.getElementAt(idx - 1) is ColumnEntry
+            }
+            .setMoveDownActionUpdater {
                 val idx = itemList.selectedIndex
-                idx >= 0 && idx < listModel.size() - 1
-                        && listModel.getElementAt(idx) is ColumnEntry
-                        && listModel.getElementAt(idx + 1) is ColumnEntry
-            })
+                idx >= 0 && idx < listModel.size() - 1 && listModel.getElementAt(idx) is ColumnEntry && listModel.getElementAt(idx + 1) is ColumnEntry
+            }
             .addExtraAction(object : AnAction("Duplicate", "Duplicate selected column", AllIcons.Actions.Copy) {
                 override fun actionPerformed(e: AnActionEvent) = duplicateSelectedColumn()
                 override fun getActionUpdateThread() = ActionUpdateThread.EDT
             })
 
-        val listWrapper = JPanel(BorderLayout()).apply {
-            border = IdeBorderFactory.createTitledBorder("Attributes", false)
+        val listPanel = JPanel(BorderLayout()).apply {
+            border = JBUI.Borders.empty(4)
             add(decorator.createPanel(), BorderLayout.CENTER)
-            preferredSize = Dimension(JBUIScale.scale(320), JBUIScale.scale(280))
+            preferredSize = Dimension(JBUIScale.scale(260), JBUIScale.scale(320))
         }
+
+        return JPanel(BorderLayout()).apply {
+            border = JBUI.Borders.empty(0)
+            add(buildSectionHeader("Attributes"), BorderLayout.NORTH)
+            add(listPanel, BorderLayout.CENTER)
+        }
+    }
+
+    private fun buildOptionsPanel(): JComponent {
         defaultExpressionField.setOneLineMode(true)
-        val details = FormBuilder.createFormBuilder()
+
+        val form = FormBuilder.createFormBuilder()
             .setVerticalGap(6)
             .addLabeledComponent("Column name:", columnNameField)
             .addLabeledComponent("Column type:", columnTypeCombo)
@@ -270,61 +384,75 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
             .addLabeledComponent("Default expression:", defaultExpressionField)
             .addLabeledComponent("Comment:", commentField)
             .panel
-            .also { it.border = IdeBorderFactory.createTitledBorder("Options", false) }
 
-        val detailsWrapper = JPanel(BorderLayout()).apply {
-            add(details, BorderLayout.NORTH)
-            isOpaque = false
-        }
-
-        return JPanel(BorderLayout(JBUIScale.scale(8), 0)).apply {
-            add(listWrapper, BorderLayout.WEST)
-            add(detailsWrapper, BorderLayout.CENTER)
+        return JPanel(BorderLayout()).apply {
+            border = JBUI.Borders.empty(0)
+            add(buildSectionHeader("Options"), BorderLayout.NORTH)
+            add(form, BorderLayout.CENTER)
         }
     }
 
     private fun buildPreviewPanel(): JComponent {
-        // Placeholder shown when content is not ready yet
         val placeholderPanel = JPanel(BorderLayout()).apply {
             background = UIUtil.getPanelBackground()
-            preferredSize = Dimension(0, JBUIScale.scale(200))
             add(JLabel("Fill in required values", SwingConstants.CENTER).apply {
                 foreground = UIUtil.getLabelDisabledForeground()
                 font = font.deriveFont(Font.ITALIC)
             }, BorderLayout.CENTER)
+            preferredSize = Dimension(0, JBUIScale.scale(200))
         }
 
-        // Real editor component — already a scroll pane internally
-        val editorComponent = previewEditorImpl.component.also {
+        val editorComponent = previewEditor.component.also {
             it.preferredSize = Dimension(0, JBUIScale.scale(200))
         }
 
-        previewCardPanel.add(placeholderPanel, CARD_PLACEHOLDER)
-        previewCardPanel.add(editorComponent, CARD_EDITOR)
+        previewCardPanel.add(placeholderPanel, previewPlaceholderCard)
+        previewCardPanel.add(editorComponent, previewEditorCard)
 
         val arrowLabel = JLabel(UIUtil.getTreeExpandedIcon()).also { previewArrowLabel = it }
-        val titleLabel = JLabel("Preview").apply {
-            font = font.deriveFont(Font.BOLD)
-            border = JBUI.Borders.emptyLeft(4)
-        }
-        val header = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
-            add(arrowLabel)
-            add(titleLabel)
+        val header = buildSectionHeader("Preview", arrowLabel).apply {
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            border = JBUI.Borders.empty(4, 0)
             addMouseListener(object : MouseAdapter() {
                 override fun mouseClicked(e: MouseEvent) = togglePreview()
             })
         }
         val content = JPanel(BorderLayout()).apply {
             add(previewCardPanel, BorderLayout.CENTER)
-            isVisible = previewExpanded
+            isVisible = previewVisible
         }.also { previewContentPanel = it }
 
         return JPanel(BorderLayout()).apply {
             border = JBUI.Borders.emptyTop(4)
             add(header, BorderLayout.NORTH)
             add(content, BorderLayout.CENTER)
+        }
+    }
+
+    private fun buildSectionHeader(title: String, leadingIcon: JComponent? = null): JComponent {
+        val label = JLabel(title).apply {
+            font = font.deriveFont(Font.PLAIN)
+            foreground = UIUtil.getLabelForeground()
+            alignmentY = Component.CENTER_ALIGNMENT
+        }
+
+        val separator = javax.swing.JSeparator(SwingConstants.HORIZONTAL).apply {
+            foreground = UIUtil.getLabelDisabledForeground()
+            alignmentY = Component.CENTER_ALIGNMENT
+            maximumSize = Dimension(Int.MAX_VALUE, 2)
+        }
+
+        return JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.X_AXIS)
+            isOpaque = false
+            border = JBUI.Borders.empty(0, 0, 4, 0)
+            alignmentX = Component.LEFT_ALIGNMENT
+            if (leadingIcon != null) {
+                add(leadingIcon)
+                add(Box.createHorizontalStrut(4))
+            }
+            add(label)
+            add(Box.createHorizontalStrut(8))
+            add(separator)
         }
     }
 
@@ -340,53 +468,70 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
         itemList.selectedIndex = 1
     }
 
-    private fun initRadioButtons() {
+    private fun initTypeSection() {
         dataSourceRadio.isEnabled = false
         sqlRadio.isEnabled = false
     }
 
-    private fun initNamesSync() {
-        fileNameField.text = normalizedFileName(toSnakeCase(modelNameField.text))
+    private fun initTableSection() {
+        tableNameDiffersCheckBox.isSelected = false
+        tableNameField.isEnabled = false
+        tableNameField.text = toSnakeCase(modelNameField.text)
 
         modelNameField.document.addDocumentListener(simpleListener {
-            if (syncingNames) return@simpleListener
+            if (syncingFields) return@simpleListener
             val text = modelNameField.text
-            modelNameUserEdited = text.isNotEmpty()
-            if (!tableNameUserEdited) {
-                setTextAfterNotification(tableNameField, toSnakeCase(text))
+            if (!tableNameDiffersCheckBox.isSelected) {
+                syncTextLater(tableNameField, toSnakeCase(text))
             }
             if (!fileNameUserEdited) {
-                setTextAfterNotification(fileNameField, normalizedFileName(toSnakeCase(text)))
+                syncTextLater(fileNameField, normalizedFileName(toSnakeCase(text)))
             }
             updatePreview()
         })
+
+        tableNameDiffersCheckBox.addActionListener {
+            tableNameField.isEnabled = tableNameDiffersCheckBox.isSelected
+            if (!tableNameDiffersCheckBox.isSelected) {
+                syncTextLater(tableNameField, toSnakeCase(modelNameField.text))
+            }
+            updatePreview()
+        }
+
         tableNameField.document.addDocumentListener(simpleListener {
-            if (syncingNames) return@simpleListener
-            val text = tableNameField.text
-            tableNameUserEdited = text.isNotEmpty()
-            if (!modelNameUserEdited) {
-                setTextAfterNotification(modelNameField, toCamelCase(text))
-            }
-            updatePreview()
+            if (syncingFields) return@simpleListener
+            if (tableNameDiffersCheckBox.isSelected) updatePreview()
         })
+    }
+
+    private fun initFileSection() {
+        fileNameField.text = normalizedFileName(toSnakeCase(modelNameField.text))
+        attributeTypesMappingCheckBox.isSelected = true
+        useLegacyColumnsCheckBox.isSelected = false
+        modelCommentField.foreground = UIUtil.getLabelDisabledForeground()
+
         fileNameField.document.addDocumentListener(simpleListener {
-            if (syncingNames) return@simpleListener
+            if (syncingFields) return@simpleListener
             val normalized = normalizedFileName(fileNameField.text)
             fileNameUserEdited = normalized != normalizedFileName(toSnakeCase(modelNameField.text))
             if (fileNameField.text != normalized) {
-                setTextAfterNotification(fileNameField, normalized)
+                syncTextLater(fileNameField, normalized)
                 return@simpleListener
             }
             updatePreview()
         })
+
+        attributeTypesMappingCheckBox.addActionListener { updatePreview() }
+        useLegacyColumnsCheckBox.addActionListener { updatePreview() }
         modelCommentField.document.addDocumentListener(simpleListener { updatePreview() })
+
+        applyMonospaceFontToInputs()
     }
 
-    private fun initColumnsUiState() {
-        applyMonospaceInputs()
-        modelCommentField.foreground = UIUtil.getLabelDisabledForeground()
+    private fun initAttributesSection() {
         commentField.foreground = UIUtil.getLabelDisabledForeground()
         itemList.addListSelectionListener { loadSelectedColumn() }
+
         columnNameField.document.addDocumentListener(simpleListener {
             updateSelectedColumn { name = columnNameField.text.trim() }
         })
@@ -396,7 +541,10 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
         primaryKeyCheckbox.addActionListener {
             updateSelectedColumn {
                 primaryKey = primaryKeyCheckbox.isSelected
-                if (primaryKey) { nullable = false; nullableCheckbox.isSelected = false }
+                if (primaryKey) {
+                    nullable = false
+                    nullableCheckbox.isSelected = false
+                }
             }
             nullableCheckbox.isEnabled = !primaryKeyCheckbox.isSelected
         }
@@ -410,10 +558,11 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
             override fun documentChanged(event: com.intellij.openapi.editor.event.DocumentEvent) {
                 updateSelectedColumn { defaultExpression = defaultExpressionField.text }
             }
-        })
+        }, listenersDisposable)
         commentField.document.addDocumentListener(simpleListener {
             updateSelectedColumn { comment = commentField.text }
         })
+
         loadSelectedColumn()
     }
 
@@ -491,9 +640,13 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
         val entry = selectedColumnEntry() ?: return
         val src = entry.spec
         val copy = SqlAlchemyColumnSpec(
-            name = nextColumnName(src.name), type = src.type,
-            primaryKey = src.primaryKey, nullable = src.nullable, unique = src.unique,
-            defaultExpression = src.defaultExpression, comment = src.comment
+            name = nextColumnName(src.name),
+            type = src.type,
+            primaryKey = src.primaryKey,
+            nullable = src.nullable,
+            unique = src.unique,
+            defaultExpression = src.defaultExpression,
+            comment = src.comment
         )
         val insertAt = (selIdx + 1).coerceAtMost(columnsEndIndex())
         listModel.insertElementAt(ColumnEntry(copy), insertAt)
@@ -517,38 +670,44 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
     // -----------------------------------------------------------------------
 
     private fun togglePreview() {
-        previewExpanded = !previewExpanded
-        previewArrowLabel?.icon = if (previewExpanded) UIUtil.getTreeExpandedIcon() else UIUtil.getTreeCollapsedIcon()
+        previewVisible = !previewVisible
+        previewArrowLabel?.icon = if (previewVisible) UIUtil.getTreeExpandedIcon() else UIUtil.getTreeCollapsedIcon()
         previewContentPanel?.let {
-            it.isVisible = previewExpanded
+            it.isVisible = previewVisible
             it.parent?.revalidate()
             it.parent?.repaint()
         }
     }
 
     private fun updatePreview() {
-        val modelName = modelNameField.text.trim()
-        val tableName = tableNameField.text.trim()
-        val cols = columnEntries()
-        val isReady = modelName.isNotEmpty() && tableName.isNotEmpty() && cols.isNotEmpty()
+        val isReady = isPreviewReady()
+        previewCardLayout.show(previewCardPanel, if (isReady) previewEditorCard else previewPlaceholderCard)
+        if (!isReady) return
 
-        previewCardLayout.show(previewCardPanel, if (isReady) CARD_EDITOR else CARD_PLACEHOLDER)
-
-        if (isReady) {
-            val code = SqlAlchemyCodeGenerator.generate(
-                SqlAlchemyModelSpec(
-                    mode = selectedMode(),
-                    modelName = modelName,
-                    tableName = tableName,
-                    fileName = normalizedFileName(fileNameField.text),
-                    modelComment = modelCommentField.text.trim(),
-                    columns = cols
-                )
-            )
-            ApplicationManager.getApplication().runWriteAction {
-                previewDocument.setText(code)
-            }
+        val spec = SqlAlchemyModelSpec(
+            mode = selectedMode(),
+            modelName = modelNameField.text.trim(),
+            tableName = effectiveTableName(),
+            fileName = normalizedFileName(fileNameField.text),
+            modelComment = modelCommentField.text.trim(),
+            attributeTypesMapping = attributeTypesMappingCheckBox.isSelected,
+            useLegacyColumns = useLegacyColumnsCheckBox.isSelected,
+            columns = columnEntries()
+        )
+        val code = SqlAlchemyCodeGenerator.generate(spec)
+        ApplicationManager.getApplication().runWriteAction {
+            previewDocument.setText(code)
         }
+    }
+
+    private fun isPreviewReady(): Boolean {
+        val modelName = modelNameField.text.trim()
+        if (modelName.isBlank()) return false
+        if (tableNameDiffersCheckBox.isSelected && tableNameField.text.trim().isBlank()) return false
+        val cols = columnEntries()
+        if (cols.isEmpty()) return false
+        if (cols.any { it.name.isBlank() }) return false
+        return true
     }
 
     // -----------------------------------------------------------------------
@@ -561,14 +720,17 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
         else -> SqlAlchemyGenerationMode.MANUAL
     }
 
-    private fun toSnakeCase(value: String) = value
+    private fun effectiveTableName(): String = if (tableNameDiffersCheckBox.isSelected) {
+        tableNameField.text.trim()
+    } else {
+        toSnakeCase(modelNameField.text.trim())
+    }
+
+    private fun toSnakeCase(value: String): String = value
         .replace(Regex("([a-z0-9])([A-Z])"), "$1_$2")
         .replace(Regex("\\s+"), "_")
-        .lowercase().trim('_')
-
-    private fun toCamelCase(value: String) = value
-        .split('_', '-', ' ').filter { it.isNotBlank() }
-        .joinToString("") { it.substring(0, 1).uppercase() + it.substring(1).lowercase() }
+        .lowercase()
+        .trim('_')
 
     private fun normalizedFileName(value: String): String {
         var normalized = value.trim().removeSuffix(".py")
@@ -582,31 +744,41 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
         override fun changedUpdate(e: DocumentEvent?) = callback()
     }
 
-    private fun setTextAfterNotification(field: JTextField, value: String) {
+    private fun syncTextLater(field: JTextField, value: String) {
         if (field.text == value) return
         SwingUtilities.invokeLater {
             if (!field.isDisplayable) return@invokeLater
             if (field.text == value) return@invokeLater
-            syncingNames = true
+            syncingFields = true
             field.text = value
-            syncingNames = false
+            syncingFields = false
             updatePreview()
         }
     }
 
-    private fun applyEditorFont(field: EditorTextField) {
-        val scheme = EditorColorsManager.getInstance().globalScheme
-        field.font = Font(scheme.editorFontName, Font.PLAIN, scheme.editorFontSize)
-    }
-
-    private fun applyMonospaceInputs() {
+    private fun applyMonospaceFontToInputs() {
         val scheme = EditorColorsManager.getInstance().globalScheme
         val mono = Font(scheme.editorFontName, Font.PLAIN, scheme.editorFontSize)
         listOf(modelNameField, tableNameField, fileNameField, modelCommentField, columnNameField, commentField).forEach {
             it.font = mono
         }
-        applyEditorFont(defaultExpressionField)
-        // Preview editor uses the global color scheme font automatically
+        columnTypeCombo.font = mono
+        defaultExpressionField.font = mono
+        previewEditor.component.font = mono
+        commentField.foreground = UIUtil.getLabelDisabledForeground()
+        modelCommentField.foreground = UIUtil.getLabelDisabledForeground()
+    }
+
+    private fun JSplitPane.installInvisibleDivider() {
+        setUI(object : BasicSplitPaneUI() {
+            override fun createDefaultDivider(): BasicSplitPaneDivider {
+                return object : BasicSplitPaneDivider(this) {
+                    override fun paint(g: Graphics?) {
+                        // Draw nothing - divider is invisible
+                    }
+                }
+            }
+        })
     }
 }
 
@@ -615,7 +787,7 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
 // ---------------------------------------------------------------------------
 private class ModelListCellRenderer : DefaultListCellRenderer() {
     override fun getListCellRendererComponent(
-        list: javax.swing.JList<*>, value: Any?, index: Int,
+        list: JList<*>, value: Any?, index: Int,
         isSelected: Boolean, cellHasFocus: Boolean
     ): Component = when (value) {
         is GroupHeader -> {
@@ -630,7 +802,7 @@ private class ModelListCellRenderer : DefaultListCellRenderer() {
         is ColumnEntry -> {
             super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
             val col = value.spec
-            val displayName = if (col.name.isEmpty()) "(unnamed)" else col.name
+            val displayName = if (col.name.isBlank()) "(unnamed)" else col.name
             text = "  $displayName: ${col.type.displayName}${if (col.primaryKey) " [PK]" else ""}"
             icon = AllIcons.Nodes.Field
             border = JBUI.Borders.empty(2, 4)
