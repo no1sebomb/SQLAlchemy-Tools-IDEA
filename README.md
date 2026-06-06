@@ -1,6 +1,6 @@
 # SQLAlchemy Tools for PyCharm
 
-![Plugin Icon](src/main/resources/META-INF/pluginIcon.png)
+![Plugin Icon](src/main/resources/META-INF/pluginIcon.svg)
 
 A lightweight PyCharm plugin that adds productivity tools for working with SQLAlchemy 2.0.
 
@@ -13,11 +13,11 @@ It provides ready-to-use file templates, live templates, and code generation hel
 ### 📄 File Templates
 - SQLAlchemy 2.0 declarative model template
 - Automatic CamelCase class generation from file name
-- Preconfigured timestamps and base structure
+- Preconfigured base structure
 
 ### ⚡ Live Templates
 Speed up ORM development with shortcuts for:
-- Columns (Integer, String, Boolean, etc.)
+- Columns (Integer, String, etc.)
 - Relationships (one-to-many, many-to-one)
 - Common SQLAlchemy patterns
 
