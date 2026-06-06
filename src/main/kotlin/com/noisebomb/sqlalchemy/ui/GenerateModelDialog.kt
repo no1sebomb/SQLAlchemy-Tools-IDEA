@@ -24,6 +24,7 @@ import com.intellij.ui.ToolbarDecorator
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBRadioButton
+import com.intellij.ui.dsl.builder.AlignX
 import com.intellij.ui.dsl.builder.panel
 import com.intellij.ui.scale.JBUIScale
 import com.intellij.openapi.util.Disposer
@@ -85,8 +86,8 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
 
     // Table section
     private val modelNameField = JTextField()
-    private val tableNameDiffersCheckBox = JBCheckBox("Table name differs")
-    private val tableNameLabel = JLabel("Table name:")
+    private val tableNameDiffersCheckBox = JBCheckBox("Different table name")
+    private val tableNameLabel = JLabel("Table:")
     private val tableNameField = JTextField()
     private val modelCommentField = JBTextArea(3, 20)
 
@@ -264,45 +265,46 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
         modelCommentField.rows = 2
         modelCommentField.border = JBUI.Borders.empty(4, 6)
 
-        val tableNameIndentedPanel = JPanel(BorderLayout()).apply {
-            isOpaque = false
-            border = JBUI.Borders.emptyLeft(0)
-            add(tableNameField, BorderLayout.CENTER)
-        }
+        // Slightly widen nested label so the Table field lines up with Model field.
+        val baseLabelSize = tableNameLabel.preferredSize
+        tableNameLabel.preferredSize = Dimension(baseLabelSize.width + JBUIScale.scale(8), baseLabelSize.height)
+        tableNameLabel.minimumSize = tableNameLabel.preferredSize
+        tableNameLabel.border = JBUI.Borders.emptyRight(6)
 
-        val tableNameRow = JPanel(BorderLayout()).apply {
-            isOpaque = false
-            border = JBUI.Borders.emptyLeft(10)
-            add(tableNameLabel.apply { border = JBUI.Borders.emptyRight(0) }, BorderLayout.WEST)
-            add(tableNameIndentedPanel, BorderLayout.CENTER)
-        }
-
-        val descriptionField = JBScrollPane(modelCommentField).apply {
+        val descriptionScroll = JBScrollPane(modelCommentField).apply {
             horizontalScrollBarPolicy = JBScrollPane.HORIZONTAL_SCROLLBAR_NEVER
             verticalScrollBarPolicy = JBScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED
             preferredSize = Dimension(0, JBUIScale.scale(48))
         }
 
-        val descriptionPanel = JPanel(BorderLayout()).apply {
+        // Large-input style: label on top, field below
+        val descriptionPanel = JPanel(BorderLayout(0, JBUIScale.scale(4))).apply {
             isOpaque = false
             add(JLabel("Description:").apply {
                 foreground = UIUtil.getLabelForeground()
-                border = JBUI.Borders.emptyBottom(4)
             }, BorderLayout.NORTH)
-            add(descriptionField, BorderLayout.CENTER)
+            add(descriptionScroll, BorderLayout.CENTER)
         }
 
-        val form = FormBuilder.createFormBuilder()
-            .setVerticalGap(6)
-            .addLabeledComponent("Model name:", modelNameField)
-            .addComponent(tableNameDiffersCheckBox)
-            .addComponent(tableNameRow)
-            .addComponent(descriptionPanel)
-            .panel
-
-        return JPanel(BorderLayout()).apply {
+        // Use IntelliJ UI DSL so indent{} aligns the sub-row exactly with checkbox text
+        return panel {
+            row("Model name:") {
+                cell(modelNameField).resizableColumn().align(AlignX.FILL)
+            }
+            row {
+                cell(tableNameDiffersCheckBox)
+            }
+            indent {
+                row {
+                    cell(tableNameLabel)
+                    cell(tableNameField).resizableColumn().align(AlignX.FILL)
+                }
+            }
+            row {
+                cell(descriptionPanel).resizableColumn().align(AlignX.FILL)
+            }
+        }.apply {
             border = JBUI.Borders.empty(4, 8, 8, 8)
-            add(form, BorderLayout.NORTH)
         }
     }
 
