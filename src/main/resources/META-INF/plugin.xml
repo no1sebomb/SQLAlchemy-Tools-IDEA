@@ -33,7 +33,12 @@
         </p>
     ]]></description>
 
+    <depends>com.intellij.modules.platform</depends>
     <depends>PythonCore</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <defaultLiveTemplates file="liveTemplates/SQLAlchemy.xml"/>
+    </extensions>
 
     <actions>
         <action id="GenerateSQLAlchemyModel"
