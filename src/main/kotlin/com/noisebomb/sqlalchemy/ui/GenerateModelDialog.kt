@@ -213,9 +213,10 @@ class GenerateModelDialog(
     private var sqlSplit: JSplitPane? = null
 
     // ---- Generation options (behind the preview gear button) ----
-    private var wrapLines = true
+    private var wrapColumns = true
     private var attributeTypesMapping = true
     private var useLegacyColumns = false
+    private var fileCodingHeader = false
 
     // ---- State ----
     private var fileName: String = ""
@@ -273,8 +274,10 @@ class GenerateModelDialog(
         tableName = effectiveTableName(),
         fileName = effectiveFileName(),
         modelComment = tableDescriptionArea.text.trim(),
+        wrapColumns = wrapColumns,
         attributeTypesMapping = attributeTypesMapping,
         useLegacyColumns = useLegacyColumns,
+        fileCodingHeader = fileCodingHeader,
         columns = columnSpecs()
     )
 
@@ -657,16 +660,20 @@ class GenerateModelDialog(
     }
 
     private fun showOptionsPopup(anchor: Component) {
-        val wrapBox = JBCheckBox("Wrap lines", wrapLines)
+        val wrapBox = JBCheckBox("Wrap columns", wrapColumns)
         val typesMappingBox = JBCheckBox("Use Mapped[] type annotations", attributeTypesMapping)
         val legacyBox = JBCheckBox("Use legacy Column()", useLegacyColumns)
+        val fileCodingHeaderBox = JBCheckBox("Add file coding header", fileCodingHeader)
+
         val content = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             border = JBUI.Borders.empty(8)
             add(wrapBox)
             add(typesMappingBox)
             add(legacyBox)
+            add(fileCodingHeaderBox)
         }
+
         typesMappingBox.addActionListener {
             attributeTypesMapping = typesMappingBox.isSelected
             updatePreview()
@@ -676,10 +683,14 @@ class GenerateModelDialog(
             updatePreview()
         }
         wrapBox.addActionListener {
-            // Wraps long column definitions in the generated code (generation logic TBD).
-            wrapLines = wrapBox.isSelected
+            wrapColumns = wrapBox.isSelected
             updatePreview()
         }
+        fileCodingHeaderBox.addActionListener {
+            fileCodingHeader = fileCodingHeaderBox.isSelected
+            updatePreview()
+        }
+
         JBPopupFactory.getInstance()
             .createComponentPopupBuilder(content, typesMappingBox)
             .setRequestFocus(true)

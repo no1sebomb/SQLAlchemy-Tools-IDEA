@@ -48,8 +48,9 @@ data class SqlAlchemyModelSpec(
     val tableName: String,
     val fileName: String,
     val modelComment: String,
+    val wrapColumns: Boolean = true,
     val attributeTypesMapping: Boolean = true,
     val useLegacyColumns: Boolean = false,
+    val fileCodingHeader: Boolean = false,
     val columns: List<SqlAlchemyColumnSpec>
 )
-
