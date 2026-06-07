@@ -974,12 +974,12 @@ class GenerateModelDialog(
         val node = tree.lastSelectedPathComponent as? DefaultMutableTreeNode
         when (val data = node?.userObject) {
             is TableData -> {
-                cardIconLabel.icon = AllIcons.Nodes.DataTables
+                cardIconLabel.icon = SqlAlchemyIcons.Table
                 cardIconLabel.text = tableDisplayName()
                 optionsHeaderCard?.isVisible = true
             }
             is ColumnData -> {
-                cardIconLabel.icon = AllIcons.Nodes.DataColumn
+                cardIconLabel.icon = SqlAlchemyIcons.forColumn(data.spec)
                 cardIconLabel.text = data.spec.name.ifBlank { "(unnamed)" }
                 optionsHeaderCard?.isVisible = true
             }
@@ -1215,7 +1215,7 @@ class GenerateModelDialog(
             val node = value as? DefaultMutableTreeNode ?: return
             when (val data = node.userObject) {
                 is TableData -> {
-                    icon = AllIcons.Nodes.DataTables
+                    icon = SqlAlchemyIcons.Table
                     append(tableDisplayName(), if (tableNodeHasError) ERROR_NAME_ATTRS else SimpleTextAttributes.REGULAR_ATTRIBUTES)
                 }
                 is FolderData -> {
@@ -1228,12 +1228,11 @@ class GenerateModelDialog(
                     }
                 }
                 is ColumnData -> {
-                    icon = AllIcons.Nodes.DataColumn
+                    icon = SqlAlchemyIcons.forColumn(data.spec)
                     val col = data.spec
                     val nameAttrs = if (columnErrorSet.contains(col)) ERROR_NAME_ATTRS else SimpleTextAttributes.REGULAR_ATTRIBUTES
                     append(col.name.ifBlank { "(unnamed)" }, nameAttrs)
                     append("  ${col.type.pythonType}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
-                    if (col.primaryKey) append("  [PK]", SimpleTextAttributes.GRAYED_ATTRIBUTES)
                 }
             }
         }

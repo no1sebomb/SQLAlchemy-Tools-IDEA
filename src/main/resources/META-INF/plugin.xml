@@ -46,7 +46,8 @@
         <action id="GenerateSQLAlchemyModel"
                 class="com.noisebomb.sqlalchemy.actions.GenerateModelAction"
                 text="SQLAlchemy Model"
-                description="Generate a new SQLAlchemy model">
+                description="Generate a new SQLAlchemy model"
+                icon="/icons/sqlalchemyModel.svg">
             <add-to-group group-id="NewGroup" anchor="last"/>
         </action>
     </actions>
