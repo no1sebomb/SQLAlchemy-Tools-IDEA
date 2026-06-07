@@ -34,6 +34,7 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
 import com.intellij.ui.dsl.builder.AlignX
+import com.intellij.ui.dsl.builder.Row
 import com.intellij.ui.dsl.builder.TopGap
 import com.intellij.ui.dsl.builder.panel
 import com.intellij.ui.scale.JBUIScale
@@ -53,7 +54,11 @@ import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Font
 import java.awt.Graphics
+import java.awt.GridBagConstraints
+import java.awt.GridBagLayout
 import java.awt.datatransfer.StringSelection
+import java.awt.event.ComponentAdapter
+import java.awt.event.ComponentEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.BorderFactory
@@ -62,6 +67,7 @@ import javax.swing.Icon
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
+import javax.swing.JSeparator
 import javax.swing.JSplitPane
 import javax.swing.JTextField
 import javax.swing.JTree
@@ -69,13 +75,11 @@ import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
-import javax.swing.event.TreeExpansionEvent
-import javax.swing.event.TreeWillExpandListener
 import javax.swing.plaf.basic.BasicSplitPaneDivider
 import javax.swing.plaf.basic.BasicSplitPaneUI
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeModel
-import javax.swing.tree.ExpandVetoException
+import javax.swing.tree.DefaultTreeSelectionModel
 import javax.swing.tree.TreePath
 import javax.swing.tree.TreeSelectionModel
 
@@ -132,8 +136,13 @@ class GenerateModelDialog(
 
     // ---- Options: selected component header card ----
     private val cardIconLabel = JBLabel()
+    private var optionsHeaderCard: JComponent? = null
     private val optionsCardLayout = CardLayout()
     private val optionsCardPanel = JPanel(optionsCardLayout)
+
+    // Rows whose label+field are toggled together with the "Different name" checkboxes
+    private var tableNameRow: Row? = null
+    private var columnNameRow: Row? = null
 
     // ---- Table options ----
     private val modelNameField = JBTextField()
@@ -171,6 +180,7 @@ class GenerateModelDialog(
             isVirtualSpace = false
             isLineMarkerAreaShown = false
             additionalColumnsCount = 0
+            additionalLinesCount = 0
         }
         (editor as? EditorEx)?.highlighter = EditorHighlighterFactory.getInstance()
             .createEditorHighlighter(project, pythonFileType)
@@ -209,6 +219,9 @@ class GenerateModelDialog(
         initListeners()
         applyMonospaceFont()
         init()
+        // Rows are created during init(); apply the initial disabled-name states now.
+        updateTableNameFieldState()
+        updateColumnNameFieldState()
         loadSelection()
         updatePreview()
     }
@@ -254,10 +267,17 @@ class GenerateModelDialog(
         applyModeLayout(modeProperty.get())
         root.add(verticalSplit!!, BorderLayout.CENTER)
 
-        SwingUtilities.invokeLater {
-            horizontalSplit?.setDividerLocation(0.33)
-            verticalSplit?.setDividerLocation(0.62)
-        }
+        // Proportional divider locations only work once the splits actually have a size.
+        // Apply them on the first valid layout pass, then stop listening.
+        verticalSplit!!.addComponentListener(object : ComponentAdapter() {
+            override fun componentResized(e: ComponentEvent) {
+                val v = verticalSplit ?: return
+                if (v.height <= 0) return
+                horizontalSplit?.setDividerLocation(0.33)
+                v.setDividerLocation(0.59)
+                v.removeComponentListener(this)
+            }
+        })
         return root
     }
 
@@ -302,10 +322,11 @@ class GenerateModelDialog(
                     border = JBUI.Borders.empty()
                     installInvisibleDivider()
                     dividerSize = JBUIScale.scale(7)
+                    // Set the divider up-front so the tree/options don't jump to the top first.
+                    dividerLocation = sqlPreferredHeight()
                 }
                 sqlSplit = split
                 contentPanel.add(split, BorderLayout.CENTER)
-                SwingUtilities.invokeLater { split.dividerLocation = sqlPreferredHeight() }
             }
             EditMode.DATA_SOURCE -> {
                 contentPanel.add(buildDataSourcePanel(), BorderLayout.NORTH)
@@ -334,14 +355,20 @@ class GenerateModelDialog(
     private fun buildTreePanel(): JComponent {
         tree.isRootVisible = true
         tree.showsRootHandles = false
-        tree.toggleClickCount = 0
-        tree.selectionModel.selectionMode = TreeSelectionModel.SINGLE_TREE_SELECTION
         tree.cellRenderer = ModelTreeCellRenderer()
-        // The structure is fixed and always fully expanded: disallow collapsing.
-        tree.addTreeWillExpandListener(object : TreeWillExpandListener {
-            override fun treeWillExpand(event: TreeExpansionEvent) {}
-            override fun treeWillCollapse(event: TreeExpansionEvent) = throw ExpandVetoException(event)
-        })
+        // Only the table, the columns folder and column nodes can be selected.
+        // Indexes/relationships are not yet supported, so they cannot be selected.
+        tree.selectionModel = object : DefaultTreeSelectionModel() {
+            init { selectionMode = TreeSelectionModel.SINGLE_TREE_SELECTION }
+
+            override fun setSelectionPaths(paths: Array<out TreePath>?) {
+                super.setSelectionPaths(paths?.filter { isSelectablePath(it) }?.toTypedArray() ?: return)
+            }
+
+            override fun addSelectionPaths(paths: Array<out TreePath>?) {
+                super.addSelectionPaths(paths?.filter { isSelectablePath(it) }?.toTypedArray() ?: return)
+            }
+        }
         expandTree()
         (columnsFolder.firstChild as? DefaultMutableTreeNode)?.let {
             tree.selectionPath = TreePath(it.path)
@@ -387,6 +414,7 @@ class GenerateModelDialog(
             border = JBUI.Borders.empty(0, 0, 8, 0)
             add(headerCard, BorderLayout.WEST)
         }
+        optionsHeaderCard = headerCard
 
         optionsCardPanel.add(buildTableCard(), "table")
         optionsCardPanel.add(buildColumnCard(), "column")
@@ -414,7 +442,7 @@ class GenerateModelDialog(
             }
             row { cell(tableNameDiffersCheckBox) }
             indent {
-                row("Table:") {
+                tableNameRow = row("Table:") {
                     cell(tableNameField).resizableColumn().align(AlignX.FILL)
                 }
             }
@@ -443,7 +471,7 @@ class GenerateModelDialog(
             }
             row { cell(columnNameDiffersCheckBox) }
             indent {
-                row("Column:") {
+                columnNameRow = row("Column:") {
                     cell(columnNameField).resizableColumn().align(AlignX.FILL)
                 }
             }
@@ -489,6 +517,7 @@ class GenerateModelDialog(
             border = JBUI.Borders.empty(4)
             add(JLabel("SQL (DDL):"), BorderLayout.NORTH)
             add(sqlEditor, BorderLayout.CENTER)
+            preferredSize = Dimension(0, sqlPreferredHeight())
         }
     }
 
@@ -561,10 +590,23 @@ class GenerateModelDialog(
             add(copyButton)
         }
 
+        // Thin separator line between the title and the action buttons (DataGrip style).
+        val separator = JSeparator(SwingConstants.HORIZONTAL).apply {
+            border = JBUI.Borders.empty(0, 16, 0, 8)
+        }
+        val separatorWrap = JPanel(GridBagLayout()).apply {
+            isOpaque = false
+            add(separator, GridBagConstraints().apply {
+                fill = GridBagConstraints.HORIZONTAL
+                weightx = 1.0
+            })
+        }
+
         return JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.empty(0, 2, 4, 2)
             add(titlePanel, BorderLayout.WEST)
+            add(separatorWrap, BorderLayout.CENTER)
             add(actionsPanel, BorderLayout.EAST)
         }
     }
@@ -623,7 +665,8 @@ class GenerateModelDialog(
             previewExpandedDividerLocation = split.dividerLocation
         }
         previewContentPanel?.isVisible = previewVisible
-        split.dividerSize = if (previewVisible) JBUIScale.scale(7) else 0
+        // Keep the divider present (for spacing) but block dragging when collapsed.
+        split.isEnabled = previewVisible
         split.revalidate()
         split.repaint()
         SwingUtilities.invokeLater {
@@ -632,7 +675,7 @@ class GenerateModelDialog(
                 s.dividerLocation = s.maximumDividerLocation
                 return@invokeLater
             }
-            val fallback = (s.height * 0.62).toInt()
+            val fallback = (s.height * 0.5).toInt()
             val minPreviewHeight = JBUIScale.scale(140)
             val upperBound = minOf(s.maximumDividerLocation, s.height - minPreviewHeight)
             val clampedUpper = maxOf(s.minimumDividerLocation, upperBound)
@@ -728,6 +771,16 @@ class GenerateModelDialog(
     private fun selectedColumnNode(): DefaultMutableTreeNode? {
         val node = tree.lastSelectedPathComponent as? DefaultMutableTreeNode ?: return null
         return if (node.userObject is ColumnData) node else null
+    }
+
+    private fun isSelectablePath(path: TreePath): Boolean {
+        val node = path.lastPathComponent as? DefaultMutableTreeNode ?: return false
+        return when (val data = node.userObject) {
+            is TableData -> true
+            is ColumnData -> true
+            is FolderData -> data.kind.active
+            else -> false
+        }
     }
 
     private fun nextColumnName(base: String): String {
@@ -868,18 +921,18 @@ class GenerateModelDialog(
             is TableData -> {
                 cardIconLabel.icon = AllIcons.Nodes.DataTables
                 cardIconLabel.text = tableDisplayName()
+                optionsHeaderCard?.isVisible = true
             }
             is ColumnData -> {
                 cardIconLabel.icon = AllIcons.Nodes.DataColumn
                 cardIconLabel.text = data.spec.name.ifBlank { "(unnamed)" }
-            }
-            is FolderData -> {
-                cardIconLabel.icon = AllIcons.Nodes.Folder
-                cardIconLabel.text = data.kind.label
+                optionsHeaderCard?.isVisible = true
             }
             else -> {
+                // Folders and empty selections have no editable options: hide the card.
                 cardIconLabel.icon = null
                 cardIconLabel.text = ""
+                optionsHeaderCard?.isVisible = false
             }
         }
     }
@@ -893,14 +946,16 @@ class GenerateModelDialog(
 
     private fun updateTableNameFieldState() {
         val enabled = tableNameDiffersCheckBox.isSelected
-        tableNameField.isEnabled = enabled
+        // Row.enabled() greys out both the "Table:" label and the field.
+        tableNameRow?.enabled(enabled)
         if (!enabled && !syncing) {
             tableNameField.text = toSnakeCase(modelNameField.text)
         }
     }
 
     private fun updateColumnNameFieldState() {
-        columnNameField.isEnabled = columnNameDiffersCheckBox.isSelected
+        // Row.enabled() greys out both the "Column:" label and the field.
+        columnNameRow?.enabled(columnNameDiffersCheckBox.isSelected)
     }
 
     // -----------------------------------------------------------------------
@@ -970,7 +1025,7 @@ class GenerateModelDialog(
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
-    private fun tableDisplayName(): String = modelNameField.text.trim().ifBlank { "Unnamed" }
+    private fun tableDisplayName(): String = modelNameField.text.trim().ifBlank { "(unnamed)" }
 
     private fun effectiveTableName(): String = if (tableNameDiffersCheckBox.isSelected) {
         tableNameField.text.trim()
