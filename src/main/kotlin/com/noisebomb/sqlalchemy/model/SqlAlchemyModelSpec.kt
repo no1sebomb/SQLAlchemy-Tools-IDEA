@@ -28,13 +28,18 @@ enum class SqlAlchemyColumnType(
 }
 
 class SqlAlchemyColumnSpec(
+    /** Python attribute name. */
     var name: String = "id",
     var type: SqlAlchemyColumnType = SqlAlchemyColumnType.INTEGER,
     var primaryKey: Boolean = false,
     var nullable: Boolean = true,
     var unique: Boolean = false,
     var defaultExpression: String = "",
-    var comment: String = ""
+    var comment: String = "",
+    /** When true the database column name differs from the attribute name. */
+    var columnNameDiffers: Boolean = false,
+    /** Explicit database column name (used only when [columnNameDiffers] is true). */
+    var columnName: String = ""
 )
 
 data class SqlAlchemyModelSpec(

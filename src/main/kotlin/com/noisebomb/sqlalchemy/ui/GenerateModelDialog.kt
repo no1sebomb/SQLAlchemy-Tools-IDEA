@@ -1,6 +1,7 @@
 package com.noisebomb.sqlalchemy.ui
 
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.actionSystem.ActionToolbarPosition
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -10,25 +11,33 @@ import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.editor.highlighter.EditorHighlighterFactory
+import com.intellij.openapi.fileTypes.FileType
 import com.intellij.openapi.fileTypes.FileTypeManager
+import com.intellij.openapi.ide.CopyPasteManager
+import com.intellij.openapi.observable.properties.AtomicProperty
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.ValidationInfo
+import com.intellij.openapi.ui.popup.JBPopupFactory
+import com.intellij.openapi.util.Disposer
 import com.intellij.psi.PsiDirectory
-import com.intellij.ui.JBColor
+import com.intellij.ui.ColoredTreeCellRenderer
+import com.intellij.ui.ComboboxSpeedSearch
 import com.intellij.ui.EditorTextField
-import com.intellij.ui.components.JBScrollPane
-import com.intellij.ui.components.JBTextArea
+import com.intellij.ui.RoundedLineBorder
+import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.ToolbarDecorator
 import com.intellij.ui.components.JBCheckBox
-import com.intellij.ui.components.JBList
-import com.intellij.ui.components.JBRadioButton
+import com.intellij.ui.components.JBLabel
+import com.intellij.ui.components.JBScrollPane
+import com.intellij.ui.components.JBTextArea
+import com.intellij.ui.components.JBTextField
 import com.intellij.ui.dsl.builder.AlignX
+import com.intellij.ui.dsl.builder.TopGap
 import com.intellij.ui.dsl.builder.panel
 import com.intellij.ui.scale.JBUIScale
-import com.intellij.openapi.util.Disposer
-import com.intellij.util.ui.FormBuilder
+import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import com.noisebomb.sqlalchemy.generation.SqlAlchemyCodeGenerator
@@ -43,429 +52,481 @@ import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Font
-import javax.swing.plaf.basic.BasicSplitPaneDivider
-import javax.swing.plaf.basic.BasicSplitPaneUI
+import java.awt.Graphics
+import java.awt.datatransfer.StringSelection
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
-import java.awt.Graphics
-import javax.swing.Box
+import javax.swing.BorderFactory
 import javax.swing.BoxLayout
-import javax.swing.DefaultListCellRenderer
-import javax.swing.DefaultListModel
-import javax.swing.DefaultListSelectionModel
+import javax.swing.Icon
 import javax.swing.JComponent
 import javax.swing.JLabel
-import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.JSplitPane
 import javax.swing.JTextField
-import javax.swing.ListSelectionModel
+import javax.swing.JTree
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
+import javax.swing.event.TreeExpansionEvent
+import javax.swing.event.TreeWillExpandListener
+import javax.swing.plaf.basic.BasicSplitPaneDivider
+import javax.swing.plaf.basic.BasicSplitPaneUI
+import javax.swing.tree.DefaultMutableTreeNode
+import javax.swing.tree.DefaultTreeModel
+import javax.swing.tree.ExpandVetoException
+import javax.swing.tree.TreePath
+import javax.swing.tree.TreeSelectionModel
 
 // ---------------------------------------------------------------------------
-// List item types
+// Tree node data
 // ---------------------------------------------------------------------------
-private sealed class ModelListItem
-private data class GroupHeader(val label: String, val active: Boolean) : ModelListItem()
-private data class ColumnEntry(val spec: SqlAlchemyColumnSpec) : ModelListItem()
+private sealed interface TreeData
+private object TableData : TreeData
+private enum class FolderKind(val label: String, val active: Boolean) {
+    COLUMNS("columns", true),
+    INDEXES("indexes", false),
+    RELATIONSHIPS("relationships", false)
+}
+private data class FolderData(val kind: FolderKind) : TreeData
+private data class ColumnData(val spec: SqlAlchemyColumnSpec) : TreeData
+
+// ---------------------------------------------------------------------------
+// Generation source mode
+// ---------------------------------------------------------------------------
+private enum class EditMode(val label: String, val mode: SqlAlchemyGenerationMode) {
+    MANUAL("Manual", SqlAlchemyGenerationMode.MANUAL),
+    SQL("SQL", SqlAlchemyGenerationMode.SQL),
+    DATA_SOURCE("Data Source", SqlAlchemyGenerationMode.DATA_SOURCE)
+}
 
 // ---------------------------------------------------------------------------
 // Dialog
 // ---------------------------------------------------------------------------
-class GenerateModelDialog(project: Project, private val targetDirectory: PsiDirectory? = null) : DialogWrapper(project) {
+class GenerateModelDialog(
+    private val project: Project,
+    private val targetDirectory: PsiDirectory? = null
+) : DialogWrapper(project) {
 
-    private val pythonFileType = FileTypeManager.getInstance().getFileTypeByExtension("py")
+    private val pythonFileType: FileType = FileTypeManager.getInstance().getFileTypeByExtension("py")
+    private val sqlFileType: FileType = FileTypeManager.getInstance().getFileTypeByExtension("sql")
 
-    // Type section
-    private val manualRadio = JBRadioButton("Manual", true)
-    private val dataSourceRadio = JBRadioButton("From Data Source (coming soon)")
-    private val sqlRadio = JBRadioButton("From SQL (coming soon)")
+    private val disposable = Disposer.newDisposable()
 
-    // Table section
-    private val modelNameField = JTextField()
+    // Mono font shared by all inputs
+    private val monoFont: Font = EditorColorsManager.getInstance().globalScheme.let {
+        Font(it.editorFontName, Font.PLAIN, it.editorFontSize)
+    }
+
+    // ---- Mode selection ----
+    private val modeProperty = AtomicProperty(EditMode.MANUAL)
+
+    // ---- Tree ----
+    private val rootNode = DefaultMutableTreeNode(TableData)
+    private val columnsFolder = DefaultMutableTreeNode(FolderData(FolderKind.COLUMNS))
+    private val indexesFolder = DefaultMutableTreeNode(FolderData(FolderKind.INDEXES))
+    private val relationshipsFolder = DefaultMutableTreeNode(FolderData(FolderKind.RELATIONSHIPS))
+    private val treeModel = DefaultTreeModel(rootNode)
+    private val tree = Tree(treeModel)
+
+    // ---- Options: selected component header card ----
+    private val cardIconLabel = JBLabel()
+    private val optionsCardLayout = CardLayout()
+    private val optionsCardPanel = JPanel(optionsCardLayout)
+
+    // ---- Table options ----
+    private val modelNameField = JBTextField()
     private val tableNameDiffersCheckBox = JBCheckBox("Different table name")
-    private val tableNameLabel = JLabel("Table:")
-    private val tableNameField = JTextField()
-    private val modelCommentField = JBTextArea(3, 20)
-    private var descriptionScrollPane: JBScrollPane? = null
+    private val tableNameField = JBTextField()
+    private val tableDescriptionArea = JBTextArea(3, 20)
 
-    // File section
-    private val fileNameField = JTextField()
-    private val wrapLinesCheckBox = JBCheckBox("Wrap lines", false)
-    private val attributeTypesMappingCheckBox = JBCheckBox("Attribute types mapping", true)
-    private val useLegacyColumnsCheckBox = JBCheckBox("Use legacy columns", false)
-
-    // Attributes / options
-    private val listModel = DefaultListModel<ModelListItem>()
-    private val itemList = JBList(listModel)
-
-    private val columnNameField = JTextField()
-    private val columnTypeCombo = ComboBox(SqlAlchemyColumnType.entries.toTypedArray())
+    // ---- Column options ----
+    private val attributeNameField = JBTextField()
+    private val columnNameDiffersCheckBox = JBCheckBox("Different column name")
+    private val columnNameField = JBTextField()
+    private val typeCombo = ComboBox(SqlAlchemyColumnType.entries.toTypedArray())
     private val primaryKeyCheckbox = JBCheckBox("Primary key")
-    private val nullableCheckbox = JBCheckBox("Nullable")
     private val uniqueCheckbox = JBCheckBox("Unique")
+    private val nullableCheckbox = JBCheckBox("Nullable")
     private val defaultExpressionField = EditorTextField("", project, pythonFileType)
-    private val commentField = JTextField()
+    private val columnDescriptionArea = JBTextArea(3, 20)
 
-     // Preview
-     private val previewFactory = EditorFactory.getInstance()
-     private val previewDocument = previewFactory.createDocument("")
-     private val previewEditor: Editor = previewFactory.createViewer(previewDocument, project).also { editor ->
-         editor.settings.apply {
-             isLineNumbersShown = true
-             isFoldingOutlineShown = false
-             isRightMarginShown = false
-             isVirtualSpace = false
-         }
-         (editor as? EditorEx)?.highlighter = EditorHighlighterFactory.getInstance()
-             .createEditorHighlighter(project, pythonFileType)
-     }
-     private val previewCardLayout = CardLayout()
-     private val previewCardPanel = JPanel(previewCardLayout)
-     private val previewPlaceholderCard = "placeholder"
-     private val previewEditorCard = "editor"
-     private val listenersDisposable = Disposer.newDisposable()
-     private var previewVisible = true
-     private var previewArrowLabel: JLabel? = null
-     private var previewContentPanel: JPanel? = null
-     private var previewExpandedDividerLocation: Int? = null
+    // ---- SQL mode ----
+    private val sqlEditor = EditorTextField("", project, sqlFileType).apply { setOneLineMode(false) }
 
-     // Split panes (for deferred layout)
-     private var attrsOptionsSplit: JSplitPane? = null
-     private var verticalSplit: JSplitPane? = null
+    // ---- Data Source mode ----
+    private val dataSourceCombo = ComboBox(arrayOf("(no connected data sources)"))
+    private val schemaCombo = ComboBox(arrayOf("public"))
+    private val dsTableCombo = ComboBox(arrayOf<String>())
 
-     // Sync state
-     private var syncingFields = false
-     private var fileNameUserEdited = false
-     private var loadingColumnDetails = false
+    // ---- Preview ----
+    private val editorFactory = EditorFactory.getInstance()
+    private val previewDocument = editorFactory.createDocument("")
+    private val previewEditor: Editor = editorFactory.createViewer(previewDocument, project).also { editor ->
+        editor.settings.apply {
+            isLineNumbersShown = true
+            isFoldingOutlineShown = false
+            isRightMarginShown = false
+            isVirtualSpace = false
+            isLineMarkerAreaShown = false
+            additionalColumnsCount = 0
+        }
+        (editor as? EditorEx)?.highlighter = EditorHighlighterFactory.getInstance()
+            .createEditorHighlighter(project, pythonFileType)
+    }
+    private val previewCardLayout = CardLayout()
+    private val previewCardPanel = JPanel(previewCardLayout)
+    private val previewPlaceholderCard = "placeholder"
+    private val previewEditorCard = "editor"
+    private var previewVisible = true
+    private var previewArrowLabel: JLabel? = null
+    private var previewContentPanel: JPanel? = null
+    private var previewExpandedDividerLocation: Int? = null
+    private var verticalSplit: JSplitPane? = null
+    private var horizontalSplit: JSplitPane? = null
+
+    // Content area that hosts the mode-specific layout above the preview
+    private val contentPanel = JPanel(BorderLayout())
+    private var treeOptionsPanel: JComponent? = null
+    private var sqlSplit: JSplitPane? = null
+
+    // ---- Generation options (behind the preview gear button) ----
+    private var attributeTypesMapping = true
+    private var useLegacyColumns = false
+    private var wrapLines = false
+
+    // ---- State ----
+    private var fileName: String = ""
+    private var fileNameUserEdited = false
+    private var loading = false
+    private var syncing = false
 
     init {
         title = "Create SQLAlchemy Model"
         setOKButtonText("Create")
-        initListModel()
-        initTypeSection()
-        initTableSection()
-        initTableDescription()
-        initFileSection()
-        initAttributesSection()
-        applyMonospaceFontToInputs()
-        updatePreview()
+        buildTreeContent()
+        initListeners()
+        applyMonospaceFont()
         init()
-        startTrackingValidation()
+        loadSelection()
+        updatePreview()
     }
 
     override fun dispose() {
-        Disposer.dispose(listenersDisposable)
-        previewFactory.releaseEditor(previewEditor)
+        Disposer.dispose(disposable)
+        editorFactory.releaseEditor(previewEditor)
         super.dispose()
     }
 
+    // -----------------------------------------------------------------------
+    // Result
+    // -----------------------------------------------------------------------
     fun getModelSpec(): SqlAlchemyModelSpec = SqlAlchemyModelSpec(
-        mode = selectedMode(),
+        mode = modeProperty.get().mode,
         modelName = modelNameField.text.trim(),
         tableName = effectiveTableName(),
-        fileName = fileNameField.text.trim(),
-        modelComment = modelCommentField.text.trim(),
-        attributeTypesMapping = attributeTypesMappingCheckBox.isSelected,
-        useLegacyColumns = useLegacyColumnsCheckBox.isSelected,
-        columns = columnEntries()
+        fileName = effectiveFileName(),
+        modelComment = tableDescriptionArea.text.trim(),
+        attributeTypesMapping = attributeTypesMapping,
+        useLegacyColumns = useLegacyColumns,
+        columns = columnSpecs()
     )
 
+    // -----------------------------------------------------------------------
+    // Layout
+    // -----------------------------------------------------------------------
     override fun createCenterPanel(): JComponent {
-        val root = JPanel(BorderLayout(0, JBUIScale.scale(10)))
+        val root = JPanel(BorderLayout(0, JBUIScale.scale(8)))
         root.border = JBUI.Borders.empty(8)
-        root.add(buildTopSectionsPanel(), BorderLayout.NORTH)
-        root.add(buildMainSplitPanel(), BorderLayout.CENTER)
-        // Defer divider locations until after layout
+        root.preferredSize = Dimension(JBUIScale.scale(820), JBUIScale.scale(700))
+
+        root.add(buildModeSelector(), BorderLayout.NORTH)
+
+        treeOptionsPanel = buildTreeOptionsSplit()
+
+        verticalSplit = JSplitPane(JSplitPane.VERTICAL_SPLIT, true, contentPanel, buildPreviewPanel()).apply {
+            resizeWeight = 1.0
+            border = JBUI.Borders.empty()
+            installInvisibleDivider()
+            dividerSize = JBUIScale.scale(7)
+        }
+        applyModeLayout(modeProperty.get())
+        root.add(verticalSplit!!, BorderLayout.CENTER)
+
         SwingUtilities.invokeLater {
-            deferredSetDividerLocations()
+            horizontalSplit?.setDividerLocation(0.33)
+            verticalSplit?.setDividerLocation(0.62)
         }
         return root
     }
 
-    override fun getDimensionServiceKey(): String? = null
-
-    override fun getInitialSize(): Dimension = Dimension(JBUIScale.scale(800), JBUIScale.scale(1000))
-
-    override fun getPreferredSize(): Dimension = Dimension(JBUIScale.scale(800), JBUIScale.scale(1000))
-
-    override fun doValidate(): ValidationInfo? {
-        val modelName = modelNameField.text.trim()
-        if (modelName.isEmpty()) return ValidationInfo("Model name is required", modelNameField)
-        if (!modelName.matches(Regex("[A-Za-z][A-Za-z0-9_]*"))) {
-            return ValidationInfo("Model name should look like a Python class name", modelNameField)
-        }
-
-        if (tableNameDiffersCheckBox.isSelected) {
-            val tableName = tableNameField.text.trim()
-            if (tableName.isEmpty()) return ValidationInfo("Table name is required", tableNameField)
-            if (!tableName.matches(Regex("[a-zA-Z_][a-zA-Z0-9_]*"))) {
-                return ValidationInfo("Table name should contain only letters, digits and underscore", tableNameField)
-            }
-        }
-
-        val fileName = fileNameField.text.trim()
-        if (fileName.isEmpty()) return ValidationInfo("Filename is required", fileNameField)
-        if (fileName.contains('/') || fileName.contains('\\')) {
-            return ValidationInfo("Filename should not include path separators", fileNameField)
-        }
-        if (!fileName.matches(Regex("[A-Za-z0-9._-]+"))) {
-            return ValidationInfo("Filename can include letters, digits, dot, dash and underscore", fileNameField)
-        }
-        if (targetDirectory?.findFile(fileName) != null) {
-            return ValidationInfo("File '$fileName' already exists in the selected directory", fileNameField)
-        }
-
-        val cols = columnEntries()
-        if (cols.isEmpty()) return ValidationInfo("At least one column is required", itemList)
-        if (cols.any { it.name.isBlank() }) return ValidationInfo("All columns must have a name", columnNameField)
-        val dup = cols.groupBy { it.name.trim() }.entries.firstOrNull { it.key.isNotEmpty() && it.value.size > 1 }
-        if (dup != null) return ValidationInfo("Duplicate column name: ${dup.key}", itemList)
-        return null
-    }
+    override fun getDimensionServiceKey(): String = "com.noisebomb.sqlalchemy.GenerateModelDialog"
 
     // -----------------------------------------------------------------------
-    // Top sections
+    // Mode selector (segmented button)
     // -----------------------------------------------------------------------
-
-    private fun buildTopSectionsPanel(): JComponent {
-        val panel = JPanel()
-        panel.layout = BoxLayout(panel, BoxLayout.Y_AXIS)
-        panel.isOpaque = false
-        panel.add(buildFixedSection("Type", buildTypeSectionBody(), 120))
-        panel.add(Box.createVerticalStrut(4))
-        panel.add(buildFixedSection("Table", buildTableSectionBody(), 210))
-        panel.add(Box.createVerticalStrut(4))
-        panel.add(buildFixedSection("File", buildFileSectionBody(), 160))
-        return panel
-    }
-
-    private fun buildFixedSection(title: String, body: JComponent, fixedHeight: Int): JComponent {
-        val wrapper = JPanel(BorderLayout())
-        wrapper.border = JBUI.Borders.empty()
-        wrapper.add(buildSectionHeader(title), BorderLayout.NORTH)
-        wrapper.add(body, BorderLayout.CENTER)
-        wrapper.maximumSize = Dimension(Int.MAX_VALUE, JBUIScale.scale(fixedHeight))
-        wrapper.minimumSize = Dimension(0, JBUIScale.scale(fixedHeight))
-        wrapper.preferredSize = Dimension(0, JBUIScale.scale(fixedHeight))
-        return wrapper
-    }
-
-    private fun buildTypeSectionBody(): JComponent {
-        val radios = panel {
-            buttonsGroup {
-                row { cell(manualRadio) }
-                row { cell(dataSourceRadio) }
-                row { cell(sqlRadio) }
-            }
-        }
-        return JPanel(BorderLayout()).apply {
-            border = JBUI.Borders.empty(4, 8, 8, 8)
-            add(radios, BorderLayout.NORTH)
-        }
-    }
-
-    private fun buildTableSectionBody(): JComponent {
-        modelCommentField.lineWrap = true
-        modelCommentField.wrapStyleWord = true
-        modelCommentField.rows = 2
-        modelCommentField.border = JBUI.Borders.empty(4, 6)
-
-        // Slightly widen nested label so the Table field lines up with Model field.
-        val baseLabelSize = tableNameLabel.preferredSize
-        tableNameLabel.preferredSize = Dimension(baseLabelSize.width + JBUIScale.scale(8), baseLabelSize.height)
-        tableNameLabel.minimumSize = tableNameLabel.preferredSize
-        tableNameLabel.border = JBUI.Borders.emptyRight(6)
-
-        val descriptionScroll = JBScrollPane(modelCommentField).apply {
-            horizontalScrollBarPolicy = JBScrollPane.HORIZONTAL_SCROLLBAR_NEVER
-            preferredSize = Dimension(0, JBUIScale.scale(48))
-        }.also { descriptionScrollPane = it }
-        updateDescriptionScrollbarPolicy()
-
-        // Large-input style: label on top, field below
-        val descriptionPanel = JPanel(BorderLayout(0, JBUIScale.scale(4))).apply {
-            isOpaque = false
-            border = JBUI.Borders.emptyTop(6)
-            add(JLabel("Description:").apply {
-                foreground = UIUtil.getLabelForeground()
-            }, BorderLayout.NORTH)
-            add(descriptionScroll, BorderLayout.CENTER)
-        }
-
-        // Use IntelliJ UI DSL so indent{} aligns the sub-row exactly with checkbox text
-        return panel {
-            row("Model name:") {
-                cell(modelNameField).resizableColumn().align(AlignX.FILL)
-            }
+    private fun buildModeSelector(): JComponent {
+        val selector = panel {
             row {
-                cell(tableNameDiffersCheckBox)
+                segmentedButton(EditMode.entries.toList()) { text = it.label }
+                    .bind(modeProperty)
+                    .align(AlignX.CENTER)
             }
-            indent {
-                row {
-                    cell(tableNameLabel)
-                    cell(tableNameField).resizableColumn().align(AlignX.FILL)
+        }
+        modeProperty.afterChange(disposable) { onModeChanged(it) }
+        return selector
+    }
+
+    private fun onModeChanged(mode: EditMode) {
+        applyModeLayout(mode)
+        updatePreview()
+    }
+
+    /**
+     * Rebuilds the content area so the tree/options section stays visible in every mode:
+     *  - Manual: tree/options fill the whole area.
+     *  - SQL: a monospaced 5-row DDL editor sits above the tree/options with a draggable divider.
+     *  - Data Source: fixed-height connection fields sit above the tree/options.
+     */
+    private fun applyModeLayout(mode: EditMode) {
+        contentPanel.removeAll()
+        val treeOptions = treeOptionsPanel ?: return
+        when (mode) {
+            EditMode.MANUAL -> {
+                contentPanel.add(treeOptions, BorderLayout.CENTER)
+            }
+            EditMode.SQL -> {
+                val split = JSplitPane(JSplitPane.VERTICAL_SPLIT, true, buildSqlPanel(), treeOptions).apply {
+                    resizeWeight = 0.0
+                    border = JBUI.Borders.empty()
+                    installInvisibleDivider()
+                    dividerSize = JBUIScale.scale(7)
                 }
+                sqlSplit = split
+                contentPanel.add(split, BorderLayout.CENTER)
+                SwingUtilities.invokeLater { split.dividerLocation = sqlPreferredHeight() }
             }
-            row {
-                cell(descriptionPanel).resizableColumn().align(AlignX.FILL)
+            EditMode.DATA_SOURCE -> {
+                contentPanel.add(buildDataSourcePanel(), BorderLayout.NORTH)
+                contentPanel.add(treeOptions, BorderLayout.CENTER)
             }
-        }.apply {
-            border = JBUI.Borders.empty(4, 8, 8, 8)
         }
+        contentPanel.revalidate()
+        contentPanel.repaint()
     }
 
-    private fun buildFileSectionBody(): JComponent {
-        val form = FormBuilder.createFormBuilder()
-            .setVerticalGap(6)
-            .addLabeledComponent("Filename:", fileNameField)
-            .addComponent(wrapLinesCheckBox)
-            .addComponent(attributeTypesMappingCheckBox)
-            .addComponent(useLegacyColumnsCheckBox)
-            .panel
-
-        return JPanel(BorderLayout()).apply {
-            border = JBUI.Borders.empty(4, 8, 8, 8)
-            add(form, BorderLayout.NORTH)
-        }
-    }
+    private fun sqlPreferredHeight(): Int = previewEditor.lineHeight * 5 + JBUIScale.scale(34)
 
     // -----------------------------------------------------------------------
-    // Main attributes/options + preview split
+    // Tree + options split
     // -----------------------------------------------------------------------
-
-    private fun buildMainSplitPanel(): JComponent {
-        val attributesPanel = buildAttributesPanel()
-        val optionsPanel = buildOptionsPanel()
-        attrsOptionsSplit = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, true, attributesPanel, optionsPanel).apply {
-            resizeWeight = 1.0 / 3.0
-            dividerSize = 8
-            border = JBUI.Borders.empty()
-            // Don't set divider location here; defer to after layout
-            installInvisibleDivider()
-        }
-
-        val previewPanel = buildPreviewPanel()
-        verticalSplit = JSplitPane(JSplitPane.VERTICAL_SPLIT, true, attrsOptionsSplit, previewPanel).apply {
-            resizeWeight = 0.0
-            dividerSize = 8
+    private fun buildTreeOptionsSplit(): JComponent {
+        horizontalSplit = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, true, buildTreePanel(), buildOptionsPanel()).apply {
+            resizeWeight = 0.33
             border = JBUI.Borders.empty()
             installInvisibleDivider()
+            dividerSize = JBUIScale.scale(7)
         }
-
-        return verticalSplit!!
+        return horizontalSplit!!
     }
 
-    private fun deferredSetDividerLocations() {
-        attrsOptionsSplit?.setDividerLocation(1.0 / 3.0)
-        verticalSplit?.setDividerLocation(0.55)
-    }
-
-    private fun buildAttributesPanel(): JComponent {
-        itemList.selectionModel = object : DefaultListSelectionModel() {
-            init { selectionMode = SINGLE_SELECTION }
-            override fun setSelectionInterval(i0: Int, i1: Int) {
-                if (i0 in 0 until listModel.size() && listModel.getElementAt(i0) is ColumnEntry) {
-                    super.setSelectionInterval(i0, i1)
-                }
-            }
+    private fun buildTreePanel(): JComponent {
+        tree.isRootVisible = true
+        tree.showsRootHandles = false
+        tree.toggleClickCount = 0
+        tree.selectionModel.selectionMode = TreeSelectionModel.SINGLE_TREE_SELECTION
+        tree.cellRenderer = ModelTreeCellRenderer()
+        // The structure is fixed and always fully expanded: disallow collapsing.
+        tree.addTreeWillExpandListener(object : TreeWillExpandListener {
+            override fun treeWillExpand(event: TreeExpansionEvent) {}
+            override fun treeWillCollapse(event: TreeExpansionEvent) = throw ExpandVetoException(event)
+        })
+        expandTree()
+        (columnsFolder.firstChild as? DefaultMutableTreeNode)?.let {
+            tree.selectionPath = TreePath(it.path)
         }
-        itemList.cellRenderer = ModelListCellRenderer()
 
-        val decorator = ToolbarDecorator.createDecorator(itemList)
-            .setAddAction {
-                val newCol = SqlAlchemyColumnSpec(name = "", type = SqlAlchemyColumnType.STRING, nullable = true)
-                val insertAt = columnsEndIndex()
-                listModel.insertElementAt(ColumnEntry(newCol), insertAt)
-                itemList.selectedIndex = insertAt
-                updatePreview()
-                SwingUtilities.invokeLater { columnNameField.requestFocusInWindow() }
-            }
-            .setRemoveAction {
-                val idx = itemList.selectedIndex
-                if (idx >= 0 && listModel.getElementAt(idx) is ColumnEntry) {
-                    listModel.remove(idx)
-                    val newSel = findNearestColumn(idx)
-                    if (newSel >= 0) itemList.selectedIndex = newSel else loadSelectedColumn()
-                    updatePreview()
-                }
-            }
+        val decorator = ToolbarDecorator.createDecorator(tree)
+            .setAddAction { addColumn() }
+            .setRemoveAction { removeSelectedColumn() }
             .setMoveUpAction { moveColumn(-1) }
             .setMoveDownAction { moveColumn(1) }
-            .setMoveUpActionUpdater {
-                val idx = itemList.selectedIndex
-                idx > 0 && idx < listModel.size() && listModel.getElementAt(idx) is ColumnEntry && listModel.getElementAt(idx - 1) is ColumnEntry
-            }
-            .setMoveDownActionUpdater {
-                val idx = itemList.selectedIndex
-                idx >= 0 && idx < listModel.size() - 1 && listModel.getElementAt(idx) is ColumnEntry && listModel.getElementAt(idx + 1) is ColumnEntry
-            }
+            .setAddActionUpdater { true }
+            .setRemoveActionUpdater { selectedColumnNode() != null }
+            .setMoveUpActionUpdater { canMoveColumn(-1) }
+            .setMoveDownActionUpdater { canMoveColumn(1) }
             .addExtraAction(object : AnAction("Duplicate", "Duplicate selected column", AllIcons.Actions.Copy) {
                 override fun actionPerformed(e: AnActionEvent) = duplicateSelectedColumn()
+                override fun update(e: AnActionEvent) {
+                    e.presentation.isEnabled = selectedColumnNode() != null
+                }
                 override fun getActionUpdateThread() = ActionUpdateThread.EDT
             })
-
-        val listPanel = JPanel(BorderLayout()).apply {
-            border = JBUI.Borders.empty(4)
-            add(decorator.createPanel(), BorderLayout.CENTER)
-            preferredSize = Dimension(JBUIScale.scale(260), JBUIScale.scale(320))
-        }
+            .setToolbarPosition(ActionToolbarPosition.TOP)
 
         return JPanel(BorderLayout()).apply {
-            border = JBUI.Borders.empty(0)
-            add(buildSectionHeader("Attributes"), BorderLayout.NORTH)
-            add(listPanel, BorderLayout.CENTER)
+            border = JBUI.Borders.empty(0, 0, 0, 4)
+            add(decorator.createPanel(), BorderLayout.CENTER)
+            minimumSize = Dimension(JBUIScale.scale(200), JBUIScale.scale(200))
         }
     }
 
     private fun buildOptionsPanel(): JComponent {
-        defaultExpressionField.setOneLineMode(true)
+        cardIconLabel.iconTextGap = JBUIScale.scale(6)
+        val headerCard = JPanel(FlowLayout(FlowLayout.LEFT, JBUIScale.scale(6), JBUIScale.scale(4))).apply {
+            border = BorderFactory.createCompoundBorder(
+                RoundedLineBorder(UIUtil.getBoundsColor(), JBUIScale.scale(8), 1),
+                JBUI.Borders.empty(3, 8)
+            )
+            isOpaque = false
+            add(cardIconLabel)
+        }
+        val headerWrap = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(0, 0, 8, 0)
+            add(headerCard, BorderLayout.WEST)
+        }
 
-        val form = FormBuilder.createFormBuilder()
-            .setVerticalGap(6)
-            .addLabeledComponent("Column name:", columnNameField)
-            .addLabeledComponent("Column type:", columnTypeCombo)
-            .addComponent(primaryKeyCheckbox)
-            .addComponent(nullableCheckbox)
-            .addComponent(uniqueCheckbox)
-            .addLabeledComponent("Default expression:", defaultExpressionField)
-            .addLabeledComponent("Comment:", commentField)
-            .panel
+        optionsCardPanel.add(buildTableCard(), "table")
+        optionsCardPanel.add(buildColumnCard(), "column")
+        optionsCardPanel.add(buildEmptyCard(), "empty")
 
         return JPanel(BorderLayout()).apply {
-            border = JBUI.Borders.empty(0)
-            add(buildSectionHeader("Options"), BorderLayout.NORTH)
-            add(form, BorderLayout.NORTH)
+            border = JBUI.Borders.empty(0, 4, 0, 0)
+            add(headerWrap, BorderLayout.NORTH)
+            add(optionsCardPanel, BorderLayout.CENTER)
+            minimumSize = Dimension(JBUIScale.scale(280), JBUIScale.scale(200))
         }
     }
 
+    private fun buildTableCard(): JComponent {
+        tableDescriptionArea.lineWrap = true
+        tableDescriptionArea.wrapStyleWord = true
+        tableDescriptionArea.rows = 2
+        val descScroll = JBScrollPane(tableDescriptionArea).apply {
+            minimumSize = Dimension(0, JBUIScale.scale(44))
+            preferredSize = Dimension(0, JBUIScale.scale(64))
+        }
+        val form = panel {
+            row("Name:") {
+                cell(modelNameField).resizableColumn().align(AlignX.FILL)
+            }
+            row { cell(tableNameDiffersCheckBox) }
+            indent {
+                row("Table:") {
+                    cell(tableNameField).resizableColumn().align(AlignX.FILL)
+                }
+            }
+            row("Description:") { }.topGap(TopGap.SMALL)
+            row {
+                cell(descScroll).resizableColumn().align(AlignX.FILL)
+            }
+        }.apply { border = JBUI.Borders.empty(4) }
+        return wrapScrollable(form)
+    }
+
+    private fun buildColumnCard(): JComponent {
+        defaultExpressionField.setOneLineMode(true)
+        columnDescriptionArea.lineWrap = true
+        columnDescriptionArea.wrapStyleWord = true
+        columnDescriptionArea.rows = 2
+        val descScroll = JBScrollPane(columnDescriptionArea).apply {
+            minimumSize = Dimension(0, JBUIScale.scale(44))
+            preferredSize = Dimension(0, JBUIScale.scale(64))
+        }
+        ComboboxSpeedSearch.installOn(typeCombo)
+
+        val form = panel {
+            row("Name:") {
+                cell(attributeNameField).resizableColumn().align(AlignX.FILL)
+            }
+            row { cell(columnNameDiffersCheckBox) }
+            indent {
+                row("Column:") {
+                    cell(columnNameField).resizableColumn().align(AlignX.FILL)
+                }
+            }
+            row("Type:") {
+                cell(typeCombo).resizableColumn().align(AlignX.FILL)
+            }
+            row {
+                cell(primaryKeyCheckbox)
+                cell(uniqueCheckbox)
+                cell(nullableCheckbox)
+            }
+            row("Default:") {
+                cell(defaultExpressionField).resizableColumn().align(AlignX.FILL)
+            }
+            row("Description:") { }.topGap(TopGap.SMALL)
+            row {
+                cell(descScroll).resizableColumn().align(AlignX.FILL)
+            }
+        }.apply { border = JBUI.Borders.empty(4) }
+        return wrapScrollable(form)
+    }
+
+    /** Wraps an options form so it scrolls (instead of clipping) when the area is too short. */
+    private fun wrapScrollable(content: JComponent): JComponent = JBScrollPane(content).apply {
+        border = JBUI.Borders.empty()
+        horizontalScrollBarPolicy = JBScrollPane.HORIZONTAL_SCROLLBAR_NEVER
+        verticalScrollBar.unitIncrement = JBUIScale.scale(16)
+    }
+
+    private fun buildEmptyCard(): JComponent = JPanel(BorderLayout()).apply {
+        add(JLabel("Select an item to edit its options", SwingConstants.CENTER).apply {
+            foreground = UIUtil.getLabelDisabledForeground()
+            font = font.deriveFont(Font.ITALIC)
+        }, BorderLayout.CENTER)
+    }
+
+    // -----------------------------------------------------------------------
+    // SQL panel
+    // -----------------------------------------------------------------------
+    private fun buildSqlPanel(): JComponent {
+        sqlEditor.setPlaceholder("-- Paste CREATE TABLE DDL here")
+        return JPanel(BorderLayout(0, JBUIScale.scale(4))).apply {
+            border = JBUI.Borders.empty(4)
+            add(JLabel("SQL (DDL):"), BorderLayout.NORTH)
+            add(sqlEditor, BorderLayout.CENTER)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Data Source panel
+    // -----------------------------------------------------------------------
+    private fun buildDataSourcePanel(): JComponent {
+        dataSourceCombo.isEnabled = false
+        schemaCombo.isEnabled = false
+        dsTableCombo.isEnabled = false
+        return panel {
+            row {
+                comment("Database integration is coming soon. Connect a data source in the Database tool window.")
+            }
+            row("Data source:") { cell(dataSourceCombo).align(AlignX.FILL) }
+            row("Schema:") { cell(schemaCombo).align(AlignX.FILL) }
+            row("Table:") { cell(dsTableCombo).align(AlignX.FILL) }
+        }.apply { border = JBUI.Borders.empty(8) }
+    }
+
+    // -----------------------------------------------------------------------
+    // Preview panel
+    // -----------------------------------------------------------------------
     private fun buildPreviewPanel(): JComponent {
         val placeholderPanel = JPanel(BorderLayout()).apply {
             background = UIUtil.getPanelBackground()
-            add(JLabel("Fill in required values", SwingConstants.CENTER).apply {
+            add(JLabel("Fill in required values to preview", SwingConstants.CENTER).apply {
                 foreground = UIUtil.getLabelDisabledForeground()
                 font = font.deriveFont(Font.ITALIC)
             }, BorderLayout.CENTER)
-            preferredSize = Dimension(0, JBUIScale.scale(200))
+            preferredSize = Dimension(0, JBUIScale.scale(160))
         }
-
         val editorComponent = previewEditor.component.also {
-            it.preferredSize = Dimension(0, JBUIScale.scale(200))
+            it.preferredSize = Dimension(0, JBUIScale.scale(160))
         }
-
         previewCardPanel.add(placeholderPanel, previewPlaceholderCard)
         previewCardPanel.add(editorComponent, previewEditorCard)
 
-        val arrowLabel = JLabel(UIUtil.getTreeExpandedIcon()).also { previewArrowLabel = it }
-        val header = buildSectionHeader("Preview", arrowLabel).apply {
-            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            addMouseListener(object : MouseAdapter() {
-                override fun mouseClicked(e: MouseEvent) = togglePreview()
-            })
-        }
         val content = JPanel(BorderLayout()).apply {
             add(previewCardPanel, BorderLayout.CENTER)
             isVisible = previewVisible
@@ -473,73 +534,234 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
 
         return JPanel(BorderLayout()).apply {
             border = JBUI.Borders.emptyTop(4)
-            add(header, BorderLayout.NORTH)
+            add(buildPreviewHeader(), BorderLayout.NORTH)
             add(content, BorderLayout.CENTER)
         }
     }
 
-    private fun buildSectionHeader(title: String, leadingIcon: JComponent? = null): JComponent {
-        val label = JLabel(title).apply {
-            font = font.deriveFont(Font.PLAIN)
-            foreground = UIUtil.getLabelForeground()
-            alignmentY = Component.CENTER_ALIGNMENT
-        }
+    private fun buildPreviewHeader(): JComponent {
+        val arrowLabel = JLabel(UIUtil.getTreeExpandedIcon()).also { previewArrowLabel = it }
+        val titleLabel = JLabel("Preview").apply { foreground = UIUtil.getLabelForeground() }
 
-        val separator = javax.swing.JSeparator(SwingConstants.HORIZONTAL).apply {
-            foreground = UIUtil.getLabelDisabledForeground()
-            alignmentY = Component.CENTER_ALIGNMENT
-            maximumSize = Dimension(Int.MAX_VALUE, 2)
-        }
-
-        return JPanel().apply {
-            layout = BoxLayout(this, BoxLayout.X_AXIS)
+        val titlePanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUIScale.scale(4), 0)).apply {
             isOpaque = false
-            border = JBUI.Borders.empty(0, 0, 4, 0)
-            alignmentX = Component.LEFT_ALIGNMENT
-            if (leadingIcon != null) {
-                add(leadingIcon)
-                add(Box.createHorizontalStrut(4))
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            add(arrowLabel)
+            add(titleLabel)
+            addMouseListener(object : MouseAdapter() {
+                override fun mouseClicked(e: MouseEvent) = togglePreview()
+            })
+        }
+
+        val optionsButton = iconButton(AllIcons.General.GearPlain, "Generation options") { showOptionsPopup(it) }
+        val copyButton = iconButton(AllIcons.Actions.Copy, "Copy generated code") { copyPreview() }
+        val actionsPanel = JPanel(FlowLayout(FlowLayout.RIGHT, JBUIScale.scale(4), 0)).apply {
+            isOpaque = false
+            add(optionsButton)
+            add(copyButton)
+        }
+
+        return JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(0, 2, 4, 2)
+            add(titlePanel, BorderLayout.WEST)
+            add(actionsPanel, BorderLayout.EAST)
+        }
+    }
+
+    private fun iconButton(icon: Icon, tooltip: String, onClick: (Component) -> Unit): JComponent {
+        return JBLabel(icon).apply {
+            toolTipText = tooltip
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            border = JBUI.Borders.empty(2)
+            addMouseListener(object : MouseAdapter() {
+                override fun mouseClicked(e: MouseEvent) = onClick(this@apply)
+            })
+        }
+    }
+
+    private fun showOptionsPopup(anchor: Component) {
+        val typesMappingBox = JBCheckBox("Use Mapped[] type annotations", attributeTypesMapping)
+        val legacyBox = JBCheckBox("Use legacy Column()", useLegacyColumns)
+        val wrapBox = JBCheckBox("Wrap lines in preview", wrapLines)
+        val content = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            border = JBUI.Borders.empty(8)
+            add(typesMappingBox)
+            add(legacyBox)
+            add(wrapBox)
+        }
+        typesMappingBox.addActionListener {
+            attributeTypesMapping = typesMappingBox.isSelected
+            updatePreview()
+        }
+        legacyBox.addActionListener {
+            useLegacyColumns = legacyBox.isSelected
+            updatePreview()
+        }
+        wrapBox.addActionListener {
+            wrapLines = wrapBox.isSelected
+            (previewEditor as? EditorEx)?.settings?.isUseSoftWraps = wrapLines
+        }
+        JBPopupFactory.getInstance()
+            .createComponentPopupBuilder(content, typesMappingBox)
+            .setRequestFocus(true)
+            .setTitle("Options")
+            .createPopup()
+            .showUnderneathOf(anchor)
+    }
+
+    private fun copyPreview() {
+        CopyPasteManager.getInstance().setContents(StringSelection(previewDocument.text))
+    }
+
+    private fun togglePreview() {
+        previewVisible = !previewVisible
+        previewArrowLabel?.icon = if (previewVisible) UIUtil.getTreeExpandedIcon() else UIUtil.getTreeCollapsedIcon()
+        val split = verticalSplit ?: return
+        if (!previewVisible) {
+            previewExpandedDividerLocation = split.dividerLocation
+        }
+        previewContentPanel?.isVisible = previewVisible
+        split.dividerSize = if (previewVisible) JBUIScale.scale(7) else 0
+        split.revalidate()
+        split.repaint()
+        SwingUtilities.invokeLater {
+            val s = verticalSplit ?: return@invokeLater
+            if (!previewVisible) {
+                s.dividerLocation = s.maximumDividerLocation
+                return@invokeLater
             }
-            add(label)
-            add(Box.createHorizontalStrut(8))
-            add(separator)
+            val fallback = (s.height * 0.62).toInt()
+            val minPreviewHeight = JBUIScale.scale(140)
+            val upperBound = minOf(s.maximumDividerLocation, s.height - minPreviewHeight)
+            val clampedUpper = maxOf(s.minimumDividerLocation, upperBound)
+            s.dividerLocation = (previewExpandedDividerLocation ?: fallback)
+                .coerceIn(s.minimumDividerLocation, clampedUpper)
+            s.revalidate()
+            s.repaint()
         }
     }
 
     // -----------------------------------------------------------------------
-    // Init helpers
+    // Tree content / actions
     // -----------------------------------------------------------------------
-
-    private fun initListModel() {
-        listModel.addElement(GroupHeader("Columns", true))
-        listModel.addElement(ColumnEntry(SqlAlchemyColumnSpec("id", SqlAlchemyColumnType.INTEGER, primaryKey = true, nullable = false)))
-        listModel.addElement(GroupHeader("Indexes", false))
-        listModel.addElement(GroupHeader("Relationships", false))
-        itemList.selectedIndex = 1
+    private fun buildTreeContent() {
+        rootNode.add(columnsFolder)
+        rootNode.add(indexesFolder)
+        rootNode.add(relationshipsFolder)
+        columnsFolder.add(
+            DefaultMutableTreeNode(
+                ColumnData(SqlAlchemyColumnSpec("id", SqlAlchemyColumnType.INTEGER, primaryKey = true, nullable = false))
+            )
+        )
+        treeModel.reload()
     }
 
-    private fun initTypeSection() {
-        dataSourceRadio.isEnabled = false
-        sqlRadio.isEnabled = false
+    private fun expandTree() {
+        tree.expandPath(TreePath(rootNode.path))
+        tree.expandPath(TreePath(columnsFolder.path))
     }
 
-    private fun initTableSection() {
-        tableNameDiffersCheckBox.isSelected = false
-        tableNameField.text = toSnakeCase(modelNameField.text)
-        updateTableNameFieldState()
+    private fun addColumn() {
+        val spec = SqlAlchemyColumnSpec(name = nextColumnName("column"), type = SqlAlchemyColumnType.STRING, nullable = true)
+        val node = DefaultMutableTreeNode(ColumnData(spec))
+        val selected = selectedColumnNode()
+        val insertIndex = if (selected != null) columnsFolder.getIndex(selected) + 1 else columnsFolder.childCount
+        treeModel.insertNodeInto(node, columnsFolder, insertIndex)
+        tree.selectionPath = TreePath(node.path)
+        updatePreview()
+        SwingUtilities.invokeLater { attributeNameField.requestFocusInWindow() }
+    }
 
+    private fun removeSelectedColumn() {
+        val node = selectedColumnNode() ?: return
+        val index = columnsFolder.getIndex(node)
+        treeModel.removeNodeFromParent(node)
+        val next: DefaultMutableTreeNode = when {
+            columnsFolder.childCount == 0 -> columnsFolder
+            index < columnsFolder.childCount -> columnsFolder.getChildAt(index) as DefaultMutableTreeNode
+            else -> columnsFolder.getChildAt(columnsFolder.childCount - 1) as DefaultMutableTreeNode
+        }
+        tree.selectionPath = TreePath(next.path)
+        updatePreview()
+    }
+
+    private fun duplicateSelectedColumn() {
+        val node = selectedColumnNode() ?: return
+        val src = (node.userObject as ColumnData).spec
+        val copy = SqlAlchemyColumnSpec(
+            name = nextColumnName(src.name.ifBlank { "column" }),
+            type = src.type,
+            primaryKey = src.primaryKey,
+            nullable = src.nullable,
+            unique = src.unique,
+            defaultExpression = src.defaultExpression,
+            comment = src.comment,
+            columnNameDiffers = src.columnNameDiffers,
+            columnName = src.columnName
+        )
+        val newNode = DefaultMutableTreeNode(ColumnData(copy))
+        val insertIndex = columnsFolder.getIndex(node) + 1
+        treeModel.insertNodeInto(newNode, columnsFolder, insertIndex)
+        tree.selectionPath = TreePath(newNode.path)
+        updatePreview()
+    }
+
+    private fun moveColumn(delta: Int) {
+        val node = selectedColumnNode() ?: return
+        val index = columnsFolder.getIndex(node)
+        val target = index + delta
+        if (target < 0 || target >= columnsFolder.childCount) return
+        treeModel.removeNodeFromParent(node)
+        treeModel.insertNodeInto(node, columnsFolder, target)
+        tree.selectionPath = TreePath(node.path)
+        updatePreview()
+    }
+
+    private fun canMoveColumn(delta: Int): Boolean {
+        val node = selectedColumnNode() ?: return false
+        val target = columnsFolder.getIndex(node) + delta
+        return target in 0 until columnsFolder.childCount
+    }
+
+    private fun selectedColumnNode(): DefaultMutableTreeNode? {
+        val node = tree.lastSelectedPathComponent as? DefaultMutableTreeNode ?: return null
+        return if (node.userObject is ColumnData) node else null
+    }
+
+    private fun nextColumnName(base: String): String {
+        val existing = columnSpecs().map { it.name }.toSet()
+        if (base !in existing) return base
+        var i = 2
+        while ("${base}_$i" in existing) i++
+        return "${base}_$i"
+    }
+
+    private fun columnSpecs(): List<SqlAlchemyColumnSpec> =
+        (0 until columnsFolder.childCount).map {
+            ((columnsFolder.getChildAt(it) as DefaultMutableTreeNode).userObject as ColumnData).spec
+        }
+
+    // -----------------------------------------------------------------------
+    // Listeners
+    // -----------------------------------------------------------------------
+    private fun initListeners() {
+        tree.addTreeSelectionListener { loadSelection() }
+
+        // Table options
         modelNameField.document.addDocumentListener(simpleListener {
-            if (syncingFields) return@simpleListener
-            val text = modelNameField.text
+            if (syncing) return@simpleListener
             if (!tableNameDiffersCheckBox.isSelected) {
-                syncTextLater(tableNameField, toSnakeCase(text))
+                syncTextLater(tableNameField, toSnakeCase(modelNameField.text))
             }
             if (!fileNameUserEdited) {
-                syncTextLater(fileNameField, suggestedFileName(text))
+                fileName = suggestedFileName(modelNameField.text)
             }
+            treeModel.nodeChanged(rootNode)
+            updateCardHeader()
             updatePreview()
         })
-
         tableNameDiffersCheckBox.addActionListener {
             updateTableNameFieldState()
             if (!tableNameDiffersCheckBox.isSelected) {
@@ -547,91 +769,31 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
             }
             updatePreview()
         }
-
         tableNameField.document.addDocumentListener(simpleListener {
-            if (syncingFields) return@simpleListener
+            if (syncing) return@simpleListener
             if (tableNameDiffersCheckBox.isSelected) updatePreview()
         })
-    }
+        tableDescriptionArea.document.addDocumentListener(simpleListener { updatePreview() })
 
-    private fun initFileSection() {
-        fileNameField.text = ""
-        fileNameUserEdited = false
-        wrapLinesCheckBox.isSelected = true
-        attributeTypesMappingCheckBox.isSelected = true
-        useLegacyColumnsCheckBox.isSelected = false
-
-        fileNameField.document.addDocumentListener(simpleListener {
-            if (syncingFields) return@simpleListener
-            if (fileNameField.text.trim().isEmpty()) {
-                fileNameUserEdited = false
-                updatePreview()
-                return@simpleListener
-            }
-            if (!fileNameUserEdited) {
-                val suggested = suggestedFileName(modelNameField.text)
-                if (fileNameField.text != suggested) {
-                    fileNameUserEdited = true
-                }
-            }
-            updatePreview()
+        // Column options
+        attributeNameField.document.addDocumentListener(simpleListener {
+            updateSelectedColumn { name = attributeNameField.text.trim() }
+            (tree.lastSelectedPathComponent as? DefaultMutableTreeNode)?.let { treeModel.nodeChanged(it) }
+            updateCardHeader()
         })
-
-        wrapLinesCheckBox.addActionListener { updatePreview() }
-        attributeTypesMappingCheckBox.addActionListener { updatePreview() }
-        useLegacyColumnsCheckBox.addActionListener { updatePreview() }
-
-        applyMonospaceFontToInputs()
-    }
-
-    private fun initTableDescription() {
-        modelCommentField.foreground = UIUtil.getTextFieldForeground()
-        modelCommentField.background = UIUtil.getTextFieldBackground()
-        modelCommentField.document.addDocumentListener(simpleListener {
-            updateDescriptionScrollbarPolicy()
-            updatePreview()
-        })
-    }
-
-    private fun updateDescriptionScrollbarPolicy() {
-        descriptionScrollPane?.verticalScrollBarPolicy = if (modelCommentField.text.isBlank()) {
-            JBScrollPane.VERTICAL_SCROLLBAR_NEVER
-        } else {
-            JBScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED
+        columnNameDiffersCheckBox.addActionListener {
+            updateColumnNameFieldState()
+            updateSelectedColumn {
+                columnNameDiffers = columnNameDiffersCheckBox.isSelected
+                columnName = if (columnNameDiffersCheckBox.isSelected) columnNameField.text.trim() else ""
+            }
         }
-    }
-
-    private fun updateTableNameFieldState() {
-        val enabled = tableNameDiffersCheckBox.isSelected
-        if (enabled) {
-            tableNameField.isEnabled = true
-            tableNameField.isEditable = true
-            tableNameField.isFocusable = true
-            tableNameField.foreground = UIUtil.getTextFieldForeground()
-            tableNameField.background = UIUtil.getTextFieldBackground()
-            tableNameField.disabledTextColor = UIUtil.getTextFieldForeground()
-            tableNameLabel.foreground = UIUtil.getLabelForeground()
-        } else {
-            // Keep component enabled to apply custom palette while preventing edits/focus.
-            tableNameField.isEnabled = true
-            tableNameField.isEditable = false
-            tableNameField.isFocusable = false
-            tableNameField.foreground = UIUtil.getLabelDisabledForeground()
-            tableNameField.background = UIUtil.getPanelBackground()
-            tableNameField.disabledTextColor = UIUtil.getLabelDisabledForeground()
-            tableNameLabel.foreground = UIUtil.getLabelDisabledForeground()
-        }
-    }
-
-    private fun initAttributesSection() {
-        commentField.foreground = UIUtil.getLabelDisabledForeground()
-        itemList.addListSelectionListener { loadSelectedColumn() }
-
         columnNameField.document.addDocumentListener(simpleListener {
-            updateSelectedColumn { name = columnNameField.text.trim() }
+            if (columnNameDiffersCheckBox.isSelected) updateSelectedColumn { columnName = columnNameField.text.trim() }
         })
-        columnTypeCombo.addActionListener {
-            updateSelectedColumn { type = columnTypeCombo.selectedItem as SqlAlchemyColumnType }
+        typeCombo.addActionListener {
+            updateSelectedColumn { type = typeCombo.selectedItem as SqlAlchemyColumnType }
+            (tree.lastSelectedPathComponent as? DefaultMutableTreeNode)?.let { treeModel.nodeChanged(it) }
         }
         primaryKeyCheckbox.addActionListener {
             updateSelectedColumn {
@@ -642,209 +804,182 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
                 }
             }
             nullableCheckbox.isEnabled = !primaryKeyCheckbox.isSelected
+            (tree.lastSelectedPathComponent as? DefaultMutableTreeNode)?.let { treeModel.nodeChanged(it) }
         }
-        nullableCheckbox.addActionListener {
-            updateSelectedColumn { nullable = nullableCheckbox.isSelected }
-        }
-        uniqueCheckbox.addActionListener {
-            updateSelectedColumn { unique = uniqueCheckbox.isSelected }
-        }
+        uniqueCheckbox.addActionListener { updateSelectedColumn { unique = uniqueCheckbox.isSelected } }
+        nullableCheckbox.addActionListener { updateSelectedColumn { nullable = nullableCheckbox.isSelected } }
         defaultExpressionField.document.addDocumentListener(object : com.intellij.openapi.editor.event.DocumentListener {
             override fun documentChanged(event: com.intellij.openapi.editor.event.DocumentEvent) {
                 updateSelectedColumn { defaultExpression = defaultExpressionField.text }
             }
-        }, listenersDisposable)
-        commentField.document.addDocumentListener(simpleListener {
-            updateSelectedColumn { comment = commentField.text }
+        }, disposable)
+        columnDescriptionArea.document.addDocumentListener(simpleListener {
+            updateSelectedColumn { comment = columnDescriptionArea.text }
         })
 
-        loadSelectedColumn()
+        sqlEditor.document.addDocumentListener(object : com.intellij.openapi.editor.event.DocumentListener {
+            override fun documentChanged(event: com.intellij.openapi.editor.event.DocumentEvent) = updatePreview()
+        }, disposable)
+
+        updateTableNameFieldState()
+        updateColumnNameFieldState()
     }
 
     // -----------------------------------------------------------------------
-    // Column helpers
+    // Selection loading
     // -----------------------------------------------------------------------
-
-    private fun loadSelectedColumn() {
-        val entry = selectedColumnEntry()
-        loadingColumnDetails = true
-        listOf(columnNameField, columnTypeCombo, primaryKeyCheckbox, nullableCheckbox, uniqueCheckbox, defaultExpressionField, commentField)
-            .forEach { it.isEnabled = entry != null }
-        if (entry == null) {
-            columnNameField.text = ""
-            defaultExpressionField.text = ""
-            commentField.text = ""
-            uniqueCheckbox.isSelected = false
-            loadingColumnDetails = false
-            return
+    private fun loadSelection() {
+        val node = tree.lastSelectedPathComponent as? DefaultMutableTreeNode
+        when (val data = node?.userObject) {
+            is TableData -> {
+                optionsCardLayout.show(optionsCardPanel, "table")
+            }
+            is ColumnData -> {
+                loadColumnCard(data.spec)
+                optionsCardLayout.show(optionsCardPanel, "column")
+            }
+            else -> optionsCardLayout.show(optionsCardPanel, "empty")
         }
-        val col = entry.spec
-        columnNameField.text = col.name
-        columnTypeCombo.selectedItem = col.type
-        primaryKeyCheckbox.isSelected = col.primaryKey
-        nullableCheckbox.isSelected = col.nullable
-        uniqueCheckbox.isSelected = col.unique
-        nullableCheckbox.isEnabled = !col.primaryKey
-        defaultExpressionField.text = col.defaultExpression
-        commentField.text = col.comment
-        loadingColumnDetails = false
+        updateCardHeader()
+    }
+
+    private fun loadColumnCard(spec: SqlAlchemyColumnSpec) {
+        loading = true
+        try {
+            attributeNameField.text = spec.name
+            columnNameDiffersCheckBox.isSelected = spec.columnNameDiffers
+            columnNameField.text = spec.columnName
+            typeCombo.selectedItem = spec.type
+            primaryKeyCheckbox.isSelected = spec.primaryKey
+            uniqueCheckbox.isSelected = spec.unique
+            nullableCheckbox.isSelected = spec.nullable
+            nullableCheckbox.isEnabled = !spec.primaryKey
+            defaultExpressionField.text = spec.defaultExpression
+            columnDescriptionArea.text = spec.comment
+            updateColumnNameFieldState()
+        } finally {
+            loading = false
+        }
+    }
+
+    private fun updateCardHeader() {
+        val node = tree.lastSelectedPathComponent as? DefaultMutableTreeNode
+        when (val data = node?.userObject) {
+            is TableData -> {
+                cardIconLabel.icon = AllIcons.Nodes.DataTables
+                cardIconLabel.text = tableDisplayName()
+            }
+            is ColumnData -> {
+                cardIconLabel.icon = AllIcons.Nodes.DataColumn
+                cardIconLabel.text = data.spec.name.ifBlank { "(unnamed)" }
+            }
+            is FolderData -> {
+                cardIconLabel.icon = AllIcons.Nodes.Folder
+                cardIconLabel.text = data.kind.label
+            }
+            else -> {
+                cardIconLabel.icon = null
+                cardIconLabel.text = ""
+            }
+        }
     }
 
     private fun updateSelectedColumn(update: SqlAlchemyColumnSpec.() -> Unit) {
-        if (loadingColumnDetails) return
-        val entry = selectedColumnEntry() ?: return
-        entry.spec.update()
-        itemList.repaint()
+        if (loading) return
+        val node = selectedColumnNode() ?: return
+        (node.userObject as ColumnData).spec.update()
         updatePreview()
     }
 
-    private fun selectedColumnEntry(): ColumnEntry? {
-        val idx = itemList.selectedIndex
-        return if (idx >= 0) listModel.getElementAt(idx) as? ColumnEntry else null
-    }
-
-    private fun columnsEndIndex(): Int {
-        for (i in 0 until listModel.size()) {
-            val item = listModel.getElementAt(i)
-            if (item is GroupHeader && item.label != "Columns") return i
+    private fun updateTableNameFieldState() {
+        val enabled = tableNameDiffersCheckBox.isSelected
+        tableNameField.isEnabled = enabled
+        if (!enabled && !syncing) {
+            tableNameField.text = toSnakeCase(modelNameField.text)
         }
-        return listModel.size()
     }
 
-    private fun findNearestColumn(removedIdx: Int): Int {
-        for (i in removedIdx - 1 downTo 0) if (listModel.getElementAt(i) is ColumnEntry) return i
-        for (i in removedIdx until listModel.size()) if (listModel.getElementAt(i) is ColumnEntry) return i
-        return -1
+    private fun updateColumnNameFieldState() {
+        columnNameField.isEnabled = columnNameDiffersCheckBox.isSelected
     }
-
-    private fun moveColumn(delta: Int) {
-        val from = itemList.selectedIndex
-        if (from < 0) return
-        val to = from + delta
-        if (to < 0 || to >= listModel.size()) return
-        if (listModel.getElementAt(from) !is ColumnEntry || listModel.getElementAt(to) !is ColumnEntry) return
-        val item = listModel.getElementAt(from)
-        listModel.remove(from)
-        listModel.add(to, item)
-        itemList.selectedIndex = to
-        updatePreview()
-    }
-
-    private fun duplicateSelectedColumn() {
-        val selIdx = itemList.selectedIndex
-        val entry = selectedColumnEntry() ?: return
-        val src = entry.spec
-        val copy = SqlAlchemyColumnSpec(
-            name = nextColumnName(src.name),
-            type = src.type,
-            primaryKey = src.primaryKey,
-            nullable = src.nullable,
-            unique = src.unique,
-            defaultExpression = src.defaultExpression,
-            comment = src.comment
-        )
-        val insertAt = (selIdx + 1).coerceAtMost(columnsEndIndex())
-        listModel.insertElementAt(ColumnEntry(copy), insertAt)
-        itemList.selectedIndex = insertAt
-        updatePreview()
-    }
-
-    private fun nextColumnName(base: String = "column"): String {
-        val existing = columnEntries().map { it.name }.toSet()
-        if (base !in existing) return base
-        var i = 2
-        while ("${base}_$i" in existing) i++
-        return "${base}_$i"
-    }
-
-    private fun columnEntries(): List<SqlAlchemyColumnSpec> =
-        (0 until listModel.size()).mapNotNull { listModel.getElementAt(it) as? ColumnEntry }.map { it.spec }
 
     // -----------------------------------------------------------------------
     // Preview
     // -----------------------------------------------------------------------
-
-    private fun togglePreview() {
-        previewVisible = !previewVisible
-        previewArrowLabel?.icon = if (previewVisible) UIUtil.getTreeExpandedIcon() else UIUtil.getTreeCollapsedIcon()
-        val split = verticalSplit ?: return
-        if (!previewVisible) {
-            // Remember expanded height so reopening restores previous preview size.
-            previewExpandedDividerLocation = split.dividerLocation
-        }
-
-        previewContentPanel?.isVisible = previewVisible
-        split.dividerSize = if (previewVisible) 8 else 0
-        split.revalidate()
-        split.repaint()
-
-        // Apply divider position after layout settles to avoid reopening in collapsed state.
-        SwingUtilities.invokeLater {
-            val s = verticalSplit ?: return@invokeLater
-            if (!previewVisible) {
-                // Collapse to bottom; header remains visible because content panel is hidden.
-                s.dividerLocation = s.maximumDividerLocation
-                return@invokeLater
-            }
-
-            val fallback = (s.height * 0.55).toInt()
-            val minPreviewHeight = JBUIScale.scale(180)
-            val upperBound = minOf(s.maximumDividerLocation, s.height - minPreviewHeight)
-            val clampedUpper = maxOf(s.minimumDividerLocation, upperBound)
-            val target = (previewExpandedDividerLocation ?: fallback)
-                .coerceIn(s.minimumDividerLocation, clampedUpper)
-            s.dividerLocation = target
-            s.revalidate()
-            s.repaint()
-        }
-    }
-
     private fun updatePreview() {
-        val isReady = isPreviewReady()
-        previewCardLayout.show(previewCardPanel, if (isReady) previewEditorCard else previewPlaceholderCard)
-        if (!isReady) return
-
-        val spec = SqlAlchemyModelSpec(
-            mode = selectedMode(),
-            modelName = modelNameField.text.trim(),
-            tableName = effectiveTableName(),
-            fileName = fileNameField.text.trim(),
-            modelComment = modelCommentField.text.trim(),
-            attributeTypesMapping = attributeTypesMappingCheckBox.isSelected,
-            useLegacyColumns = useLegacyColumnsCheckBox.isSelected,
-            columns = columnEntries()
-        )
-        val code = SqlAlchemyCodeGenerator.generate(spec)
+        if (modeProperty.get() != EditMode.MANUAL || !isPreviewReady()) {
+            previewCardLayout.show(previewCardPanel, previewPlaceholderCard)
+            return
+        }
+        previewCardLayout.show(previewCardPanel, previewEditorCard)
+        val code = SqlAlchemyCodeGenerator.generate(getModelSpec())
         ApplicationManager.getApplication().runWriteAction {
             previewDocument.setText(code)
         }
     }
 
     private fun isPreviewReady(): Boolean {
-        val modelName = modelNameField.text.trim()
-        if (modelName.isBlank()) return false
+        if (modelNameField.text.trim().isBlank()) return false
         if (tableNameDiffersCheckBox.isSelected && tableNameField.text.trim().isBlank()) return false
-        val cols = columnEntries()
-        if (cols.isEmpty()) return false
-        if (cols.any { it.name.isBlank() }) return false
+        val cols = columnSpecs()
+        if (cols.isEmpty() || cols.any { it.name.isBlank() }) return false
         return true
     }
 
     // -----------------------------------------------------------------------
-    // Misc
+    // Validation
     // -----------------------------------------------------------------------
+    override fun doValidate(): ValidationInfo? {
+        if (modeProperty.get() != EditMode.MANUAL) {
+            return ValidationInfo("This generation mode is coming soon. Please use Manual for now.")
+        }
+        val modelName = modelNameField.text.trim()
+        if (modelName.isEmpty()) return ValidationInfo("Model name is required", modelNameField)
+        if (!modelName.matches(Regex("[A-Za-z_][A-Za-z0-9_]*"))) {
+            return ValidationInfo("Model name must be a valid Python class name", modelNameField)
+        }
+        if (tableNameDiffersCheckBox.isSelected) {
+            val tableName = tableNameField.text.trim()
+            if (tableName.isEmpty()) return ValidationInfo("Table name is required", tableNameField)
+            if (!tableName.matches(Regex("[A-Za-z_][A-Za-z0-9_]*"))) {
+                return ValidationInfo("Table name should contain only letters, digits and underscore", tableNameField)
+            }
+        }
 
-    private fun selectedMode() = when {
-        dataSourceRadio.isSelected -> SqlAlchemyGenerationMode.DATA_SOURCE
-        sqlRadio.isSelected -> SqlAlchemyGenerationMode.SQL
-        else -> SqlAlchemyGenerationMode.MANUAL
+        val cols = columnSpecs()
+        if (cols.isEmpty()) return ValidationInfo("At least one column is required", tree)
+        for (col in cols) {
+            if (col.name.isBlank()) return ValidationInfo("All columns must have an attribute name", attributeNameField)
+            if (!col.name.matches(Regex("[A-Za-z_][A-Za-z0-9_]*"))) {
+                return ValidationInfo("Attribute '${col.name}' must be a valid Python identifier", attributeNameField)
+            }
+            if (col.columnNameDiffers && col.columnName.isBlank()) {
+                return ValidationInfo("Column name is required when 'Different column name' is checked", columnNameField)
+            }
+        }
+        val dup = cols.groupBy { it.name }.entries.firstOrNull { it.value.size > 1 }
+        if (dup != null) return ValidationInfo("Duplicate attribute name: ${dup.key}", tree)
+
+        val file = effectiveFileName()
+        if (targetDirectory?.findFile(file) != null) {
+            return ValidationInfo("File '$file' already exists in the selected directory")
+        }
+        return null
     }
+
+    // -----------------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------------
+    private fun tableDisplayName(): String = modelNameField.text.trim().ifBlank { "Unnamed" }
 
     private fun effectiveTableName(): String = if (tableNameDiffersCheckBox.isSelected) {
         tableNameField.text.trim()
     } else {
         toSnakeCase(modelNameField.text.trim())
     }
+
+    private fun effectiveFileName(): String =
+        if (fileNameUserEdited && fileName.isNotBlank()) fileName else suggestedFileName(modelNameField.text)
 
     private fun toSnakeCase(value: String): String = value
         .replace(Regex("([a-z0-9])([A-Z])"), "$1_$2")
@@ -854,7 +989,7 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
 
     private fun suggestedFileName(value: String): String {
         val base = toSnakeCase(value.trim())
-        return if (base.isBlank()) "" else "$base.py"
+        return if (base.isBlank()) "model.py" else "$base.py"
     }
 
     private fun simpleListener(callback: () -> Unit): DocumentListener = object : DocumentListener {
@@ -866,69 +1001,70 @@ class GenerateModelDialog(project: Project, private val targetDirectory: PsiDire
     private fun syncTextLater(field: JTextField, value: String) {
         if (field.text == value) return
         SwingUtilities.invokeLater {
-            if (!field.isDisplayable) return@invokeLater
-            if (field.text == value) return@invokeLater
-            syncingFields = true
+            if (!field.isDisplayable || field.text == value) return@invokeLater
+            syncing = true
             field.text = value
-            syncingFields = false
+            syncing = false
             updatePreview()
         }
     }
 
-    private fun applyMonospaceFontToInputs() {
-        val scheme = EditorColorsManager.getInstance().globalScheme
-        val mono = Font(scheme.editorFontName, Font.PLAIN, scheme.editorFontSize)
-        listOf(modelNameField, tableNameField, fileNameField, columnNameField, commentField).forEach {
-            it.font = mono
-        }
-        modelCommentField.font = mono
-        columnTypeCombo.font = mono
-        defaultExpressionField.font = mono
-        previewEditor.component.font = mono
-        commentField.foreground = UIUtil.getLabelDisabledForeground()
-        modelCommentField.foreground = UIUtil.getTextFieldForeground()
-        modelCommentField.background = UIUtil.getTextFieldBackground()
+    private fun applyMonospaceFont() {
+        listOf(
+            modelNameField, tableNameField, attributeNameField, columnNameField
+        ).forEach { it.font = monoFont }
+        typeCombo.font = monoFont
+        tableDescriptionArea.font = monoFont
+        columnDescriptionArea.font = monoFont
+        // EditorTextField components already use the editor (mono) font.
     }
 
+    /** Keeps the split divider draggable but paints nothing, so no stray lines appear. */
     private fun JSplitPane.installInvisibleDivider() {
         setUI(object : BasicSplitPaneUI() {
-            override fun createDefaultDivider(): BasicSplitPaneDivider {
-                return object : BasicSplitPaneDivider(this) {
+            override fun createDefaultDivider(): BasicSplitPaneDivider =
+                object : BasicSplitPaneDivider(this) {
                     override fun paint(g: Graphics?) {
-                        // Draw nothing - divider is invisible
+                        // intentionally empty: invisible divider
                     }
                 }
-            }
         })
+        border = JBUI.Borders.empty()
+    }
+
+    // -----------------------------------------------------------------------
+    // Tree cell renderer
+    // -----------------------------------------------------------------------
+    private inner class ModelTreeCellRenderer : ColoredTreeCellRenderer() {
+        override fun customizeCellRenderer(
+            tree: JTree, value: Any?, selected: Boolean,
+            expanded: Boolean, leaf: Boolean, row: Int, hasFocus: Boolean
+        ) {
+            val node = value as? DefaultMutableTreeNode ?: return
+            when (val data = node.userObject) {
+                is TableData -> {
+                    icon = AllIcons.Nodes.DataTables
+                    append(tableDisplayName())
+                }
+                is FolderData -> {
+                    icon = AllIcons.Nodes.Folder
+                    val attrs = if (data.kind.active) SimpleTextAttributes.REGULAR_ATTRIBUTES
+                    else SimpleTextAttributes.GRAYED_ATTRIBUTES
+                    append(data.kind.label, attrs)
+                    if (data.kind == FolderKind.COLUMNS) {
+                        append("  ${columnsFolder.childCount}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                    }
+                }
+                is ColumnData -> {
+                    icon = AllIcons.Nodes.DataColumn
+                    val col = data.spec
+                    append(col.name.ifBlank { "(unnamed)" })
+                    append("  ${col.type.pythonType}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                    if (col.primaryKey) append("  [PK]", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                }
+            }
+        }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Cell renderer
-// ---------------------------------------------------------------------------
-private class ModelListCellRenderer : DefaultListCellRenderer() {
-    override fun getListCellRendererComponent(
-        list: JList<*>, value: Any?, index: Int,
-        isSelected: Boolean, cellHasFocus: Boolean
-    ): Component = when (value) {
-        is GroupHeader -> {
-            super.getListCellRendererComponent(list, value, index, false, false)
-            text = value.label
-            font = font.deriveFont(Font.BOLD)
-            icon = AllIcons.Nodes.Folder
-            if (!value.active) foreground = UIUtil.getLabelDisabledForeground()
-            border = JBUI.Borders.empty(3, 4)
-            this
-        }
-        is ColumnEntry -> {
-            super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
-            val col = value.spec
-            val displayName = if (col.name.isBlank()) "(unnamed)" else col.name
-            text = "  $displayName: ${col.type.displayName}${if (col.primaryKey) " [PK]" else ""}"
-            icon = AllIcons.Nodes.Field
-            border = JBUI.Borders.empty(2, 4)
-            this
-        }
-        else -> super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
-    }
-}
+
