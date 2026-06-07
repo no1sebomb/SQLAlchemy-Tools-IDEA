@@ -1,6 +1,6 @@
 import org.jetbrains.intellij.platform.gradle.extensions.intellijPlatform
 
-rootProject.name = "sqlalchemy-templates"
+rootProject.name = "sqlalchemy-tools"
 
 pluginManagement {
     plugins {

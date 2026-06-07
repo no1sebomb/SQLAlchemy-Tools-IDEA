@@ -1,7 +1,7 @@
 <!-- Plugin Configuration File -->
 <idea-plugin>
     <id>com.noisebomb.sqlalchemy.templates</id>
-    <name>SQLAlchemy Templates</name>
+    <name>SQLAlchemy Tools</name>
     <vendor url="https://github.com/no1sebomb">noisebomb</vendor>
     <description><![CDATA[
         <p>
@@ -9,23 +9,25 @@
         </p>
 
         <p>
-            The plugin provides ready-to-use templates and code generation helpers for modern SQLAlchemy 2.0 projects.
+            Design your tables visually and generate clean, modern SQLAlchemy 2.0 models in seconds — no boilerplate typing required.
         </p>
 
-        <h3>Features</h3>
+        <h3>Interactive Model Generator</h3>
+        <p>
+            A DataGrip-style "Create Model" dialog lets you build a model the way you think about a table:
+        </p>
+        <ul>
+            <li>Tree-based editor for the table and its columns (add, remove, reorder, duplicate)</li>
+            <li>Per-column options: type, primary key, unique, nullable, default expression and description</li>
+            <li>Smart naming with CamelCase / snake_case hints and Python validation</li>
+            <li>Live, syntax-highlighted preview of the generated code with one-click copy</li>
+            <li>Generates SQLAlchemy 2.0 style with <code>Mapped[]</code> and <code>mapped_column()</code> (legacy <code>Column()</code> optional)</li>
+        </ul>
+
+        <h3>Templates</h3>
         <ul>
             <li>File templates for SQLAlchemy models</li>
             <li>Live templates for columns, relationships, and common ORM patterns</li>
-            <li>SQLAlchemy model generation actions</li>
-            <li>SQLAlchemy 2.0 style with <code>Mapped[]</code> and <code>mapped_column()</code></li>
-        </ul>
-
-        <h3>Included Templates</h3>
-        <ul>
-            <li>Declarative model template</li>
-            <li>Column snippets</li>
-            <li>Relationship snippets</li>
-            <li>Common SQLAlchemy boilerplate</li>
         </ul>
 
         <p>
