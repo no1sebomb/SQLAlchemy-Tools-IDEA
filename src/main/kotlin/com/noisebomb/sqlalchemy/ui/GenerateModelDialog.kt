@@ -17,14 +17,19 @@ import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.observable.properties.AtomicProperty
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
+import com.intellij.openapi.ui.ComponentValidator
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.ValidationInfo
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.util.Disposer
 import com.intellij.psi.PsiDirectory
+import com.intellij.psi.PsiErrorElement
+import com.intellij.psi.PsiFileFactory
+import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.ui.ColoredTreeCellRenderer
 import com.intellij.ui.ComboboxSpeedSearch
 import com.intellij.ui.EditorTextField
+import com.intellij.ui.JBColor
 import com.intellij.ui.RoundedLineBorder
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.ToolbarDecorator
@@ -61,6 +66,7 @@ import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.util.function.Supplier
 import javax.swing.BorderFactory
 import javax.swing.BoxLayout
 import javax.swing.Icon
@@ -95,6 +101,11 @@ private enum class FolderKind(val label: String, val active: Boolean) {
 }
 private data class FolderData(val kind: FolderKind) : TreeData
 private data class ColumnData(val spec: SqlAlchemyColumnSpec) : TreeData
+
+private val PYTHON_IDENTIFIER = Regex("\\A[A-Za-z_][A-Za-z0-9_]*\\z")
+
+// Red wavy underline for tree nodes that have validation errors (text keeps its normal color).
+private val ERROR_NAME_ATTRS = SimpleTextAttributes(null, null, JBColor.RED, SimpleTextAttributes.STYLE_WAVED)
 
 // ---------------------------------------------------------------------------
 // Generation source mode
@@ -202,15 +213,21 @@ class GenerateModelDialog(
     private var sqlSplit: JSplitPane? = null
 
     // ---- Generation options (behind the preview gear button) ----
+    private var wrapLines = true
     private var attributeTypesMapping = true
     private var useLegacyColumns = false
-    private var wrapLines = false
 
     // ---- State ----
     private var fileName: String = ""
     private var fileNameUserEdited = false
     private var loading = false
     private var syncing = false
+    // The "Model name is required" error is only shown after the user has interacted.
+    private var modelNameTouched = false
+
+    // Cached error state used to underline tree nodes that have validation problems.
+    private val columnErrorSet = HashSet<SqlAlchemyColumnSpec>()
+    private var tableNodeHasError = false
 
     init {
         title = "Create SQLAlchemy Model"
@@ -224,6 +241,21 @@ class GenerateModelDialog(
         updateColumnNameFieldState()
         loadSelection()
         updatePreview()
+        installNamingWarnings()
+        // Continuously re-run doValidate() so rules like "no columns" disable the OK button.
+        startTrackingValidation()
+    }
+
+    override fun getPreferredFocusedComponent(): JComponent = modelNameField
+
+    override fun doOKAction() {
+        // Pressing Create counts as interaction: enforce the required-name check now.
+        modelNameTouched = true
+        if (doValidate() != null) {
+            modelNameField.requestFocusInWindow()
+            return
+        }
+        super.doOKAction()
     }
 
     override fun dispose() {
@@ -370,9 +402,8 @@ class GenerateModelDialog(
             }
         }
         expandTree()
-        (columnsFolder.firstChild as? DefaultMutableTreeNode)?.let {
-            tree.selectionPath = TreePath(it.path)
-        }
+        // Select the table by default so the Model name field is shown (and focused).
+        tree.selectionPath = TreePath(rootNode.path)
 
         val decorator = ToolbarDecorator.createDecorator(tree)
             .setAddAction { addColumn() }
@@ -456,6 +487,9 @@ class GenerateModelDialog(
 
     private fun buildColumnCard(): JComponent {
         defaultExpressionField.setOneLineMode(true)
+        // EditorTextField inherits the proportional LAF font by default; force monospaced.
+        defaultExpressionField.setFontInheritedFromLAF(false)
+        defaultExpressionField.font = monoFont
         columnDescriptionArea.lineWrap = true
         columnDescriptionArea.wrapStyleWord = true
         columnDescriptionArea.rows = 2
@@ -623,15 +657,15 @@ class GenerateModelDialog(
     }
 
     private fun showOptionsPopup(anchor: Component) {
+        val wrapBox = JBCheckBox("Wrap lines", wrapLines)
         val typesMappingBox = JBCheckBox("Use Mapped[] type annotations", attributeTypesMapping)
         val legacyBox = JBCheckBox("Use legacy Column()", useLegacyColumns)
-        val wrapBox = JBCheckBox("Wrap lines in preview", wrapLines)
         val content = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             border = JBUI.Borders.empty(8)
+            add(wrapBox)
             add(typesMappingBox)
             add(legacyBox)
-            add(wrapBox)
         }
         typesMappingBox.addActionListener {
             attributeTypesMapping = typesMappingBox.isSelected
@@ -642,8 +676,9 @@ class GenerateModelDialog(
             updatePreview()
         }
         wrapBox.addActionListener {
+            // Wraps long column definitions in the generated code (generation logic TBD).
             wrapLines = wrapBox.isSelected
-            (previewEditor as? EditorEx)?.settings?.isUseSoftWraps = wrapLines
+            updatePreview()
         }
         JBPopupFactory.getInstance()
             .createComponentPopupBuilder(content, typesMappingBox)
@@ -801,6 +836,15 @@ class GenerateModelDialog(
     // -----------------------------------------------------------------------
     private fun initListeners() {
         tree.addTreeSelectionListener { loadSelection() }
+
+        // Mark the model name as "touched" once focus leaves it, so the required-error
+        // is only surfaced after the user has had a chance to fill it in.
+        modelNameField.addFocusListener(object : java.awt.event.FocusAdapter() {
+            override fun focusLost(e: java.awt.event.FocusEvent) {
+                modelNameTouched = true
+                recomputeTreeErrors()
+            }
+        })
 
         // Table options
         modelNameField.document.addDocumentListener(simpleListener {
@@ -962,6 +1006,7 @@ class GenerateModelDialog(
     // Preview
     // -----------------------------------------------------------------------
     private fun updatePreview() {
+        recomputeTreeErrors()
         if (modeProperty.get() != EditMode.MANUAL || !isPreviewReady()) {
             previewCardLayout.show(previewCardPanel, previewPlaceholderCard)
             return
@@ -973,43 +1018,104 @@ class GenerateModelDialog(
         }
     }
 
+    /** Recomputes which tree nodes have validation errors and repaints the tree. */
+    private fun recomputeTreeErrors() {
+        val specs = columnSpecs()
+        val nameCounts = specs.groupingBy { it.name }.eachCount()
+        columnErrorSet.clear()
+        for (s in specs) {
+            val hasError = s.name.isBlank() ||
+                !PYTHON_IDENTIFIER.matches(s.name) ||
+                (nameCounts[s.name] ?: 0) > 1 ||
+                (s.columnNameDiffers && s.columnName.isBlank()) ||
+                !isValidPythonExpression(s.defaultExpression)
+            if (hasError) columnErrorSet.add(s)
+        }
+
+        val name = modelNameField.text.trim()
+        tableNodeHasError = (name.isEmpty() && modelNameTouched) ||
+            (name.isNotEmpty() && !PYTHON_IDENTIFIER.matches(name)) ||
+            (tableNameDiffersCheckBox.isSelected && tableNameField.text.trim().let { it.isEmpty() || !PYTHON_IDENTIFIER.matches(it) })
+
+        tree.repaint()
+    }
+
     private fun isPreviewReady(): Boolean {
         if (modelNameField.text.trim().isBlank()) return false
         if (tableNameDiffersCheckBox.isSelected && tableNameField.text.trim().isBlank()) return false
-        val cols = columnSpecs()
-        if (cols.isEmpty() || cols.any { it.name.isBlank() }) return false
+        // No columns is fine (empty class); only block on half-filled column names.
+        if (columnSpecs().any { it.name.isBlank() }) return false
         return true
     }
 
     // -----------------------------------------------------------------------
     // Validation
     // -----------------------------------------------------------------------
+    /** Non-blocking style warnings shown inline on the name fields. */
+    private fun installNamingWarnings() {
+        ComponentValidator(disposable).withValidator(Supplier {
+            val text = modelNameField.text.trim()
+            if (text.isNotEmpty() && PYTHON_IDENTIFIER.matches(text) && !isCamelCase(text)) {
+                ValidationInfo("Model name is usually written in CamelCase", modelNameField).asWarning()
+            } else null
+        }).installOn(modelNameField).andRegisterOnDocumentListener(modelNameField)
+
+        ComponentValidator(disposable).withValidator(Supplier {
+            val text = attributeNameField.text.trim()
+            if (text.isNotEmpty() && PYTHON_IDENTIFIER.matches(text) && !isSnakeCase(text)) {
+                ValidationInfo("Attribute name is usually written in snake_case", attributeNameField).asWarning()
+            } else null
+        }).installOn(attributeNameField).andRegisterOnDocumentListener(attributeNameField)
+    }
+
+    private fun isCamelCase(name: String): Boolean = name.matches(Regex("[A-Z][A-Za-z0-9]*"))
+
+    private fun isSnakeCase(name: String): Boolean = name.matches(Regex("[a-z_][a-z0-9_]*"))
+
+    /** Validates that [text] parses as a single Python expression. Blank is treated as valid. */
+    private fun isValidPythonExpression(text: String): Boolean {
+        if (text.isBlank()) return true
+        return try {
+            val file = PsiFileFactory.getInstance(project)
+                .createFileFromText("__sa_default__.py", pythonFileType, "__x__ = ($text)")
+            PsiTreeUtil.findChildOfType(file, PsiErrorElement::class.java) == null
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     override fun doValidate(): ValidationInfo? {
         if (modeProperty.get() != EditMode.MANUAL) {
             return ValidationInfo("This generation mode is coming soon. Please use Manual for now.")
         }
         val modelName = modelNameField.text.trim()
-        if (modelName.isEmpty()) return ValidationInfo("Model name is required", modelNameField)
-        if (!modelName.matches(Regex("[A-Za-z_][A-Za-z0-9_]*"))) {
+        if (modelName.isEmpty()) {
+            // Don't nag on a pristine form; only complain once the user has interacted.
+            return if (modelNameTouched) ValidationInfo("Model name is required", modelNameField) else null
+        }
+        if (!PYTHON_IDENTIFIER.matches(modelName)) {
             return ValidationInfo("Model name must be a valid Python class name", modelNameField)
         }
         if (tableNameDiffersCheckBox.isSelected) {
             val tableName = tableNameField.text.trim()
             if (tableName.isEmpty()) return ValidationInfo("Table name is required", tableNameField)
-            if (!tableName.matches(Regex("[A-Za-z_][A-Za-z0-9_]*"))) {
+            if (!PYTHON_IDENTIFIER.matches(tableName)) {
                 return ValidationInfo("Table name should contain only letters, digits and underscore", tableNameField)
             }
         }
 
         val cols = columnSpecs()
-        if (cols.isEmpty()) return ValidationInfo("At least one column is required", tree)
+        // A model with no columns is allowed (it becomes an empty Python class).
         for (col in cols) {
             if (col.name.isBlank()) return ValidationInfo("All columns must have an attribute name", attributeNameField)
-            if (!col.name.matches(Regex("[A-Za-z_][A-Za-z0-9_]*"))) {
+            if (!PYTHON_IDENTIFIER.matches(col.name)) {
                 return ValidationInfo("Attribute '${col.name}' must be a valid Python identifier", attributeNameField)
             }
             if (col.columnNameDiffers && col.columnName.isBlank()) {
                 return ValidationInfo("Column name is required when 'Different column name' is checked", columnNameField)
+            }
+            if (!isValidPythonExpression(col.defaultExpression)) {
+                return ValidationInfo("Default of '${col.name}' is not a valid Python expression", defaultExpressionField)
             }
         }
         val dup = cols.groupBy { it.name }.entries.firstOrNull { it.value.size > 1 }
@@ -1099,7 +1205,7 @@ class GenerateModelDialog(
             when (val data = node.userObject) {
                 is TableData -> {
                     icon = AllIcons.Nodes.DataTables
-                    append(tableDisplayName())
+                    append(tableDisplayName(), if (tableNodeHasError) ERROR_NAME_ATTRS else SimpleTextAttributes.REGULAR_ATTRIBUTES)
                 }
                 is FolderData -> {
                     icon = AllIcons.Nodes.Folder
@@ -1113,7 +1219,8 @@ class GenerateModelDialog(
                 is ColumnData -> {
                     icon = AllIcons.Nodes.DataColumn
                     val col = data.spec
-                    append(col.name.ifBlank { "(unnamed)" })
+                    val nameAttrs = if (columnErrorSet.contains(col)) ERROR_NAME_ATTRS else SimpleTextAttributes.REGULAR_ATTRIBUTES
+                    append(col.name.ifBlank { "(unnamed)" }, nameAttrs)
                     append("  ${col.type.pythonType}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
                     if (col.primaryKey) append("  [PK]", SimpleTextAttributes.GRAYED_ATTRIBUTES)
                 }
