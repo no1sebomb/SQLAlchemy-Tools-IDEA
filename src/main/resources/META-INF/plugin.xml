@@ -24,6 +24,11 @@
             <li>Generates SQLAlchemy 2.0 style with <code>Mapped[]</code> and <code>mapped_column()</code> (legacy <code>Column()</code> optional)</li>
         </ul>
 
+        <h3>Integrated Gutter Icons</h3>
+        <ul>
+            <li>Navigate between related models with clickable icons in the gutter</li>
+        </ul>
+
         <h3>Templates</h3>
         <ul>
             <li>File templates for SQLAlchemy models</li>
