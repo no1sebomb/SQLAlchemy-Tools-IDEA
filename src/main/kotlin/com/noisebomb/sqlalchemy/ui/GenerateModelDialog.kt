@@ -1038,7 +1038,7 @@ class GenerateModelDialog(
             val hasError = s.name.isBlank() ||
                 !PYTHON_IDENTIFIER.matches(s.name) ||
                 (nameCounts[s.name] ?: 0) > 1 ||
-                (s.columnNameDiffers && s.columnName.isBlank()) ||
+                (s.columnNameDiffers && (s.columnName.isBlank() || !PYTHON_IDENTIFIER.matches(s.columnName))) ||
                 !isValidPythonExpression(s.defaultExpression)
             if (hasError) columnErrorSet.add(s)
         }
@@ -1122,8 +1122,13 @@ class GenerateModelDialog(
             if (!PYTHON_IDENTIFIER.matches(col.name)) {
                 return ValidationInfo("Attribute '${col.name}' must be a valid Python identifier", attributeNameField)
             }
-            if (col.columnNameDiffers && col.columnName.isBlank()) {
-                return ValidationInfo("Column name is required when 'Different column name' is checked", columnNameField)
+            if (col.columnNameDiffers) {
+                if (col.columnName.isBlank()) {
+                    return ValidationInfo("Column name is required when 'Different column name' is checked", columnNameField)
+                }
+                if (!PYTHON_IDENTIFIER.matches(col.columnName)) {
+                    return ValidationInfo("Column name should contain only letters, digits and underscore", columnNameField)
+                }
             }
             if (!isValidPythonExpression(col.defaultExpression)) {
                 return ValidationInfo("Default of '${col.name}' is not a valid Python expression", defaultExpressionField)

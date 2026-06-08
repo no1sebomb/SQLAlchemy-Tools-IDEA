@@ -6,7 +6,9 @@
               toReformat="true">
         <variable name="NAME" expression="" defaultValue="" alwaysStopAt="true"/>
         <context>
-            <option name="PYTHON_CLASS" value="true"/>
+            <option name="Python" value="true"/>
+            <option name="CLASS" value="true"/>
+            <option name="STATEMENT" value="true"/>
         </context>
     </template>
 

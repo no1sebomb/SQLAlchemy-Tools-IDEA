@@ -125,7 +125,7 @@ object SqlAlchemyCodeGenerator {
         val annotation = if (spec.attributeTypesMapping) ": Mapped[${column.type.pythonType}]" else ""
         val columnClass = if (spec.useLegacyColumns) "Column" else "mapped_column"
         val args = buildList {
-            if (column.columnName.isNotBlank()) { add(column.columnName.trim()) }
+            if (column.columnName.isNotBlank()) { add("\"" + column.columnName.trim() + "\"") }
             add(column.type.sqlalchemyType)
             if (column.primaryKey) add("primary_key=True")
             if (column.unique) add("unique=True")
