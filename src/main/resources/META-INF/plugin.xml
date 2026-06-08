@@ -1,6 +1,6 @@
 <!-- Plugin Configuration File -->
 <idea-plugin>
-    <id>com.noisebomb.sqlalchemy.templates</id>
+    <id>com.noisebomb.sqlalchemy.tools</id>
     <name>SQLAlchemy Tools</name>
     <vendor url="https://github.com/no1sebomb">noisebomb</vendor>
     <description><![CDATA[
@@ -39,7 +39,13 @@
     <depends>PythonCore</depends>
 
     <extensions defaultExtensionNs="com.intellij">
-        <defaultLiveTemplates file="liveTemplates/SQLAlchemy.xml"/>
+        <defaultLiveTemplates
+                file="liveTemplates/SQLAlchemy.xml"
+        />
+        <codeInsight.lineMarkerProvider
+                language="Python"
+                implementationClass="com.noisebomb.sqlalchemy.linemarkers.RelationshipLineMarkerProvider"
+        />
     </extensions>
 
     <actions>

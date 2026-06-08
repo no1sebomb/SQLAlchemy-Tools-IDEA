@@ -26,6 +26,7 @@ object SqlAlchemyIcons {
 
     /** Relationship. */
     val Relationship: Icon = load("/icons/relationship.svg")
+    val RelationshipLink: Icon = load("/icons/relationshipLink.svg")
 
     /** Picks the right column icon for the given spec. */
     fun forColumn(spec: SqlAlchemyColumnSpec): Icon = when {

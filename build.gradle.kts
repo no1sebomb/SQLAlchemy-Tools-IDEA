@@ -14,8 +14,7 @@ dependencies {
 
     intellijPlatform {
         intellijIdea("2025.3.5")
-        testFramework(TestFrameworkType.Platform)
-
         compatiblePlugin("PythonCore")
+        testFramework(TestFrameworkType.Platform)
     }
 }
