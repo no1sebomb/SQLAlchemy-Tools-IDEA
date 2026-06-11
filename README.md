@@ -48,7 +48,9 @@ This plugin uses modern SQLAlchemy patterns:
 
 ### From JetBrains Marketplace
 
-Coming soon to the JetBrains Marketplace! 
+Plugin is available on [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/32172-sqlalchemy-tools).
+
+Alternatively, you can open `Settings` > `Plugins` > `Marketplace` and search for **SQLAlchemy Tools**
 
 ### Manual Installation
 
