@@ -48,9 +48,14 @@ class RelationshipLineMarkerProvider : RelatedItemLineMarkerProvider() {
         val call = target.findAssignedValue() as? PyCallExpression ?: return
         if (!call.isRelationshipCall()) return
 
-        // 4. `back_populates` must be present and non-empty.
+        // 4. `back_populates` (or `backref`) must be present and non-empty.
         val backPopulates = call.stringKeywordArgument("back_populates")
-        if (backPopulates.isNullOrEmpty()) return
+        val backRef = call.stringKeywordArgument("backref")
+        val back = when {
+            !backPopulates.isNullOrEmpty() -> backPopulates
+            !backRef.isNullOrEmpty() -> backRef
+            else -> return
+        }
 
         // 5. The attribute must live inside a model class that inherits a (declarative) base.
         val ownerClass = PsiTreeUtil.getParentOfType(target, PyClass::class.java) ?: return
@@ -58,12 +63,12 @@ class RelationshipLineMarkerProvider : RelatedItemLineMarkerProvider() {
 
         // 6. Resolve the related class referenced by the first positional argument.
         val relatedClassName = call.relationshipTargetClassName() ?: return
-        val relatedAttribute = findBackPopulatedAttribute(element, relatedClassName, backPopulates) ?: return
+        val relatedAttribute = findBackPopulatedAttribute(element, relatedClassName, back) ?: return
 
         // 7. Build the gutter marker pointing to the back-populated attribute.
         val builder = NavigationGutterIconBuilder.create(SqlAlchemyIcons.RelationshipLink)
             .setTarget(relatedAttribute)
-            .setTooltipText("Navigate to $relatedClassName.$backPopulates")
+            .setTooltipText("Navigate to $relatedClassName.$back")
             .setPopupTitle("SQLAlchemy Relationship")
 
         result.add(builder.createLineMarkerInfo(element))

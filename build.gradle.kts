@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.noisebomb.sqlalchemy"
-version = "0.0.2"
+version = "0.0.3"
 
 dependencies {
     testImplementation(libs.junit)

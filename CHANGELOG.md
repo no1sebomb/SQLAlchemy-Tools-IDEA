@@ -33,3 +33,9 @@
 
 - New plugin icon.
 - Support for older IntelliJ versions (2024.3+).
+
+## [0.0.3] - 2026-06-16
+
+### Added
+
+- Support `backref` as alternative to `back_populates` in relationship links.
