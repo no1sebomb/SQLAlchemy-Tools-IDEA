@@ -26,3 +26,10 @@
 
 - Fixed input validation for different column name - now it only accepts valid SQL column name.
 - Fixed `colint` live template.
+
+## [0.0.2] - 2026-06-16
+
+### Added
+
+- New plugin icon.
+- Support for older IntelliJ versions (2024.3+).

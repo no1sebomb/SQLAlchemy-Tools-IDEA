@@ -7,13 +7,13 @@ plugins {
 }
 
 group = "com.noisebomb.sqlalchemy"
-version = "0.0.1"
+version = "0.0.2"
 
 dependencies {
     testImplementation(libs.junit)
 
     intellijPlatform {
-        intellijIdea("2025.3.5")
+        intellijIdea("2024.3")
         compatiblePlugin("PythonCore")
         testFramework(TestFrameworkType.Platform)
     }
