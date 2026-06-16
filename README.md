@@ -1,6 +1,6 @@
 # SQLAlchemy Tools for IntelliJ IDEA
 
-![Plugin Icon](src/main/resources/META-INF/pluginIcon.svg)
+![Plugin Icon](src/main/resources/META-INF/pluginIcon_dark.svg)
 
 A lightweight PyCharm plugin that adds productivity tools for working with SQLAlchemy 2.0.
 
