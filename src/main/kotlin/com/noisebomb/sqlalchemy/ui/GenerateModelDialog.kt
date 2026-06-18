@@ -215,6 +215,8 @@ class GenerateModelDialog(
     private var sqlHeaderArrowLabel: JLabel? = null
     private var sqlHeaderExpandedDividerLocation: Int? = null
     private var sqlSplit: JSplitPane? = null
+    private var sqlHeaderComponent: JComponent? = null
+    private var sqlContentPanel: JComponent? = null
 
     // ---- Data Source mode ----
     private val dataSourceCombo = ComboBox(arrayOf("(no connected data sources)"))
@@ -398,10 +400,12 @@ class GenerateModelDialog(
                     border = JBUI.Borders.empty()
                     installInvisibleDivider()
                     dividerSize = JBUIScale.scale(7)
-                    // Set the divider up-front so the tree/options don't jump to the top first.
-                    dividerLocation = sqlPreferredHeight()
                 }
                 sqlSplit = split
+                // Set the divider up-front so the tree/options don't jump to the top first.
+                // (Needs sqlSplit assigned so collapsedSqlDividerLocation can read its insets.)
+                split.dividerLocation =
+                    if (sqlHeaderVisible) sqlPreferredHeight() else collapsedSqlDividerLocation()
                 contentPanel.add(split, BorderLayout.CENTER)
             }
             EditMode.DATA_SOURCE -> {
@@ -593,11 +597,20 @@ class GenerateModelDialog(
         sqlStatusLabel.foreground = UIUtil.getLabelDisabledForeground()
         sqlStatusLabel.border = JBUI.Borders.emptyTop(2)
 
-        return JPanel(BorderLayout(0, JBUIScale.scale(4))).apply {
-            border = JBUI.Borders.empty(4)
-            add(buildSqlHeader(), BorderLayout.NORTH)
+        val header = buildSqlHeader().also { sqlHeaderComponent = it }
+
+        // Editor + status live in their own panel so folding can hide them while the header stays.
+        val content = JPanel(BorderLayout(0, JBUIScale.scale(4))).apply {
+            isOpaque = false
             add(sqlInputEditor.component, BorderLayout.CENTER)
             add(sqlStatusLabel, BorderLayout.SOUTH)
+            isVisible = sqlHeaderVisible
+        }.also { sqlContentPanel = it }
+
+        return JPanel(BorderLayout(0, JBUIScale.scale(4))).apply {
+            border = JBUI.Borders.empty(4)
+            add(header, BorderLayout.NORTH)
+            add(content, BorderLayout.CENTER)
             preferredSize = Dimension(0, sqlPreferredHeight())
         }
     }
@@ -651,30 +664,36 @@ class GenerateModelDialog(
         sqlHeaderArrowLabel?.icon =
             if (sqlHeaderVisible) UIUtil.getTreeExpandedIcon()
             else UIUtil.getTreeCollapsedIcon()
-//        FIXME
-//        val split = sqlSplit ?: return
-//        if (!sqlHeaderVisible) {
-//            sqlHeaderExpandedDividerLocation = split.dividerLocation
-//        }
-//        // Keep the divider present (for spacing) but block dragging when collapsed.
-//        split.isEnabled = sqlHeaderVisible
-//        split.revalidate()
-//        split.repaint()
-//        SwingUtilities.invokeLater {
-//            val s = verticalSplit ?: return@invokeLater
-//            if (!sqlHeaderVisible) {
-//                s.dividerLocation = s.maximumDividerLocation
-//                return@invokeLater
-//            }
-//            val fallback = (s.height * 0.5).toInt()
-//            val minSqlHeaderHeight = JBUIScale.scale(140)
-//            val upperBound = minOf(s.maximumDividerLocation, s.height - minSqlHeaderHeight)
-//            val clampedUpper = maxOf(s.minimumDividerLocation, upperBound)
-//            s.dividerLocation = (sqlHeaderExpandedDividerLocation ?: fallback)
-//                .coerceIn(s.minimumDividerLocation, clampedUpper)
-//            s.revalidate()
-//            s.repaint()
-//        }
+        // The SQL panel is the TOP component of sqlSplit, so collapsing it means pushing the
+        // divider UP to the header height (unlike the preview, which is the bottom component).
+        val split = sqlSplit ?: return
+        if (!sqlHeaderVisible) {
+            sqlHeaderExpandedDividerLocation = split.dividerLocation
+        }
+        sqlContentPanel?.isVisible = sqlHeaderVisible
+        // Keep the divider present (for spacing) but block dragging when collapsed.
+        split.isEnabled = sqlHeaderVisible
+        split.revalidate()
+        split.repaint()
+        SwingUtilities.invokeLater {
+            val s = sqlSplit ?: return@invokeLater
+            if (!sqlHeaderVisible) {
+                s.dividerLocation = collapsedSqlDividerLocation()
+                return@invokeLater
+            }
+            s.dividerLocation = (sqlHeaderExpandedDividerLocation ?: sqlPreferredHeight())
+                .coerceIn(s.minimumDividerLocation, s.maximumDividerLocation)
+            s.revalidate()
+            s.repaint()
+        }
+    }
+
+    /** Divider location that leaves only the SQL header (plus the panel's border) visible. */
+    private fun collapsedSqlDividerLocation(): Int {
+        val header = sqlHeaderComponent ?: return JBUIScale.scale(34)
+        val insets = (sqlSplit?.topComponent as? JComponent)?.insets
+        return header.preferredSize.height +
+                (insets?.top ?: JBUIScale.scale(4)) + (insets?.bottom ?: JBUIScale.scale(4))
     }
 
     // -----------------------------------------------------------------------
