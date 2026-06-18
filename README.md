@@ -6,7 +6,10 @@ A lightweight PyCharm plugin that adds productivity tools for working with SQLAl
 
 It provides ready-to-use file templates, live templates, and code generation helpers for faster and more consistent ORM development.
 
-
+> [!NOTE]
+> Some parts of the source code were written with the help of AI, 
+> since I have no experience with Kotlin and the IntelliJ Platform SDK. 
+> However, I have reviewed and tested all generated code to ensure it works as intended.
 
 ---
 
