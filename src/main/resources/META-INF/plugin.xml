@@ -1,47 +1,11 @@
 <!-- Plugin Configuration File -->
 <idea-plugin>
     <id>com.noisebomb.sqlalchemy.tools</id>
-    <name>SQLAlchemy Tools</name>
     <vendor url="https://github.com/no1sebomb">noisebomb</vendor>
-    <description><![CDATA[
-        <p>
-            Productivity toolkit for SQLAlchemy development in PyCharm and IntelliJ IDEA.
-        </p>
-
-        <p>
-            Design your tables visually and generate clean, modern SQLAlchemy 2.0 models in seconds — no boilerplate typing required.
-        </p>
-
-        <h3>Interactive Model Generator</h3>
-        <p>
-            A DataGrip-style "Create Model" dialog lets you build a model the way you think about a table:
-        </p>
-        <ul>
-            <li>Tree-based editor for the table and its columns (add, remove, reorder, duplicate)</li>
-            <li>Per-column options: type, primary key, unique, nullable, default expression and description</li>
-            <li>Smart naming with CamelCase / snake_case hints and Python validation</li>
-            <li>Live, syntax-highlighted preview of the generated code with one-click copy</li>
-            <li>Generates SQLAlchemy 2.0 style with <code>Mapped[]</code> and <code>mapped_column()</code> (legacy <code>Column()</code> optional)</li>
-        </ul>
-
-        <h3>Integrated Gutter Icons</h3>
-        <ul>
-            <li>Navigate between related models with clickable icons in the gutter</li>
-        </ul>
-
-        <h3>Templates</h3>
-        <ul>
-            <li>File templates for SQLAlchemy models</li>
-            <li>Live templates for columns, relationships, and common ORM patterns</li>
-        </ul>
-
-        <p>
-            Designed to reduce repetitive typing and help maintain consistent SQLAlchemy code across projects.
-        </p>
-    ]]></description>
+    <!-- description is injected by patchPluginXml from README.md's "Plugin description" markers -->
 
     <depends>com.intellij.modules.platform</depends>
-    <depends>PythonCore</depends>
+    <depends>com.intellij.modules.python</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <defaultLiveTemplates

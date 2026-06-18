@@ -2,7 +2,7 @@
 
 ![Plugin Icon](src/main/resources/META-INF/pluginIcon_dark.svg)
 
-A lightweight PyCharm plugin that adds productivity tools for working with SQLAlchemy 2.0.
+A lightweight **PyCharm** plugin that adds productivity tools for working with **SQLAlchemy**.
 
 It provides ready-to-use file templates, live templates, and code generation helpers for faster and more consistent ORM development.
 
@@ -13,12 +13,19 @@ It provides ready-to-use file templates, live templates, and code generation hel
 
 ---
 
+<!-- Plugin description -->
+Design your tables visually and generate clean, modern **SQLAlchemy** models in seconds — no boilerplate typing required.
+
 ## ✨ Features
 
-### 🚀 Model Generator Action
-- Generate SQLAlchemy models via IDE action
-- Interactive input for model name
-- Extensible foundation for future schema-based generation
+### 🚀 Interactive Model Generator
+A DataGrip-style "Create Model" dialog lets you build a model the way you think about a table:
+- Tree-based editor for the table and its columns (add, remove, reorder, duplicate)
+- Per-column options: type, primary key, unique, nullable, default expression and description
+- SQL (DDL) mode: paste a `CREATE TABLE` statement and have the columns filled in automatically
+- Smart naming with CamelCase / snake_case hints and Python validation
+- Live, syntax-highlighted preview of the generated code with one-click copy
+- Generates SQLAlchemy 2.0 style with `Mapped[]` and `mapped_column()` (legacy `Column()` optional)
 
 ### 🔗 Gutter Icons
 - Visual indicators for relationships in the code
@@ -34,6 +41,9 @@ Speed up ORM development with shortcuts for:
 - Columns (Integer, String, etc.)
 - Relationships (one-to-many, many-to-one)
 - Common SQLAlchemy patterns
+
+Designed to reduce repetitive typing and help maintain consistent SQLAlchemy code across projects.
+<!-- Plugin description end -->
 
 ---
 
