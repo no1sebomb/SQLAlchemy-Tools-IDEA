@@ -6,6 +6,8 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.command.WriteCommandAction
+import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.colors.EditorColorsManager
@@ -29,8 +31,11 @@ import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.ValidationInfo
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.util.text.StringUtil
 import com.intellij.psi.PsiDirectory
+import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiErrorElement
+import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiFileFactory
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.ui.ColoredTreeCellRenderer
@@ -72,6 +77,7 @@ import java.awt.Font
 import java.awt.Graphics
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
+import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
 import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
@@ -195,8 +201,13 @@ class GenerateModelDialog(
 
     // ---- SQL mode ----
     // A full editor (not an EditorTextField) so the DDL input matches the preview exactly:
-    // user theme + editor font + real scrollbars, plus line numbers, folding and SQL highlighting.
-    private val sqlDocument = editorFactory.createDocument("")
+    // user theme + editor font + real scrollbars, plus line numbers and SQL highlighting.
+    // Backed by a PSI file so IntelliJ code completion (and language folding) work in the field.
+    private val sqlPsiFile: PsiFile = PsiFileFactory.getInstance(project).createFileFromText(
+        "__sa_ddl__.${if (sqlHighlightingAvailable) "sql" else "txt"}", sqlEditorFileType, "", 0L, true
+    )
+    private val sqlDocument: Document =
+        PsiDocumentManager.getInstance(project).getDocument(sqlPsiFile) ?: editorFactory.createDocument("")
     private val sqlInputEditor: Editor = editorFactory.createEditor(sqlDocument, project, sqlEditorFileType, false).also { editor ->
         editor.settings.apply {
             isLineNumbersShown = true
@@ -606,11 +617,11 @@ class GenerateModelDialog(
 
         val header = buildSqlHeader().also { sqlHeaderComponent = it }
 
-        // Editor + status live in their own panel so folding can hide them while the header stays.
-        val content = JPanel(BorderLayout(0, JBUIScale.scale(4))).apply {
+        // Only the editor folds away; the status/error label stays visible underneath so the
+        // user never loses the parse error when the SQL box is collapsed.
+        val content = JPanel(BorderLayout()).apply {
             isOpaque = false
             add(sqlInputEditor.component, BorderLayout.CENTER)
-            add(sqlStatusLabel, BorderLayout.SOUTH)
             isVisible = sqlHeaderVisible
         }.also { sqlContentPanel = it }
 
@@ -618,6 +629,7 @@ class GenerateModelDialog(
             border = JBUI.Borders.empty(4)
             add(header, BorderLayout.NORTH)
             add(content, BorderLayout.CENTER)
+            add(sqlStatusLabel, BorderLayout.SOUTH)
             preferredSize = Dimension(0, sqlPreferredHeight())
         }
     }
@@ -651,19 +663,44 @@ class GenerateModelDialog(
             })
         }
 
-        return JPanel(BorderLayout()).apply {
+        val actionsPanel = JPanel(FlowLayout(FlowLayout.RIGHT, JBUIScale.scale(4), 0)).apply {
             isOpaque = false
-            border = JBUI.Borders.empty(0, 2, 4, 2)
-            add(titlePanel1, BorderLayout.WEST)
-            add(separatorWrap, BorderLayout.CENTER)
             if (!sqlHighlightingAvailable) {
                 // Parsing still works everywhere; only highlighting needs the Database Tools plugin.
                 add(JBLabel("Install “Database Tools and SQL” for syntax highlighting").apply {
                     foreground = UIUtil.getLabelDisabledForeground()
                     font = font.deriveFont(font.size2D - JBUIScale.scale(1f))
-                }, BorderLayout.EAST)
+                })
             }
+            add(iconButton(AllIcons.Actions.MenuPaste, "Paste SQL from clipboard") { pasteSql() })
+            add(iconButton(AllIcons.Actions.Copy, "Copy SQL") { copySql() })
         }
+
+        return JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(0, 2, 4, 2)
+            add(titlePanel1, BorderLayout.WEST)
+            add(separatorWrap, BorderLayout.CENTER)
+            add(actionsPanel, BorderLayout.EAST)
+        }
+    }
+
+    private fun copySql() {
+        CopyPasteManager.getInstance().setContents(StringSelection(sqlDocument.text))
+    }
+
+    private fun pasteSql() {
+        val clip = try {
+            CopyPasteManager.getInstance().getContents<String>(DataFlavor.stringFlavor)
+        } catch (e: Exception) {
+            null
+        } ?: return
+        // Document text must use \n only; normalize whatever the clipboard carried.
+        WriteCommandAction.runWriteCommandAction(project) {
+            sqlDocument.setText(StringUtil.convertLineSeparators(clip))
+        }
+        sqlInputEditor.caretModel.moveToOffset(sqlDocument.textLength)
+        sqlInputEditor.contentComponent.requestFocusInWindow()
     }
 
     private fun toggleSqlHeader() {
@@ -695,12 +732,13 @@ class GenerateModelDialog(
         }
     }
 
-    /** Divider location that leaves only the SQL header (plus the panel's border) visible. */
+    /** Divider location that leaves the SQL header and the status label (which never folds) visible. */
     private fun collapsedSqlDividerLocation(): Int {
         val header = sqlHeaderComponent ?: return JBUIScale.scale(34)
         val insets = (sqlSplit?.topComponent as? JComponent)?.insets
-        return header.preferredSize.height +
-                (insets?.top ?: JBUIScale.scale(4)) + (insets?.bottom ?: JBUIScale.scale(4))
+        return header.preferredSize.height + sqlStatusLabel.preferredSize.height +
+                (insets?.top ?: JBUIScale.scale(4)) + (insets?.bottom ?: JBUIScale.scale(4)) +
+                JBUIScale.scale(4) // BorderLayout vgap between the (hidden) editor and the label
     }
 
     // -----------------------------------------------------------------------
