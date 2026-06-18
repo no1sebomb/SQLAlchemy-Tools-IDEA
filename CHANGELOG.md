@@ -39,3 +39,14 @@
 ### Added
 
 - Support `backref` as alternative to `back_populates` in relationship links.
+
+## [0.0.4] - 2026-06-19
+
+### Added
+
+- Create SQLAlchemy model from SQL (DDL)
+- New icon for 'SQLAlchemy Model' action
+
+### Fixed
+
+- Fixed an issue in dependency configuration that made the plugin unavailable for PyCharm Pro.
