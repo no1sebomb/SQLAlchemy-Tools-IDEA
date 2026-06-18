@@ -25,6 +25,31 @@ class SqlDdlParserTest {
     }
 
     @Test
+    fun failureHasFriendlyMessageAndPosition() {
+        // Unclosed parenthesis -> the parser hits <EOF> and reports a position.
+        val result = SqlDdlParser.parse("CREATE TABLE users (\n  id INTEGER")
+        assertTrue(result is SqlParseResult.Failure)
+        val failure = result as SqlParseResult.Failure
+        // Human-friendly: no raw "net.sf.jsqlparser..." / JavaCC dump.
+        assertFalse(failure.message.contains("jsqlparser"))
+        assertFalse(failure.message.contains("Was expecting"))
+        assertTrue(
+            "got: ${failure.message}",
+            failure.message.startsWith("Unexpected") ||
+                failure.message.startsWith("The statement looks incomplete") ||
+                failure.message.startsWith("Couldn")
+        )
+        assertTrue("expected a line position, got ${failure.line}", failure.line >= 1)
+    }
+
+    @Test
+    fun missingCreateTableIsReported() {
+        val result = SqlDdlParser.parse("SELECT 1")
+        assertTrue(result is SqlParseResult.Failure)
+        assertTrue((result as SqlParseResult.Failure).message.contains("CREATE TABLE"))
+    }
+
+    @Test
     fun parsesInlineConstraintsAndTypes() {
         val table = success(
             """

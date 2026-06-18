@@ -28,7 +28,12 @@ sealed interface SqlParseResult {
     /** Input was blank; nothing to do. */
     object Empty : SqlParseResult
     data class Success(val table: ParsedTable) : SqlParseResult
-    data class Failure(val message: String) : SqlParseResult
+    data class Failure(
+        val message: String,
+        /** 1-based caret position of the problem, or -1 when unknown. */
+        val line: Int = -1,
+        val column: Int = -1
+    ) : SqlParseResult
 }
 
 /**
@@ -45,16 +50,41 @@ object SqlDdlParser {
 
         val createTable = try {
             extractCreateTable(sql)
-        } catch (e: JSQLParserException) {
-            return SqlParseResult.Failure(firstLine(e.message))
         } catch (e: Throwable) {
-            return SqlParseResult.Failure(e.message ?: "Could not parse SQL")
-        } ?: return SqlParseResult.Failure("No CREATE TABLE statement found")
+            return failureFrom(e)
+        } ?: return SqlParseResult.Failure("No CREATE TABLE statement found — paste a CREATE TABLE … statement.")
 
         return try {
             SqlParseResult.Success(buildTable(createTable))
         } catch (e: Throwable) {
-            SqlParseResult.Failure(e.message ?: "Could not read table definition")
+            SqlParseResult.Failure(e.message ?: "Could not read the table definition.")
+        }
+    }
+
+    /** Turns a raw parser exception into a human-friendly message and a caret position (if any). */
+    private fun failureFrom(error: Throwable): SqlParseResult.Failure {
+        val raw = error.message ?: error.cause?.message ?: ""
+        val (line, column) = extractPosition(raw)
+        return SqlParseResult.Failure(friendlyMessage(raw, line, column), line, column)
+    }
+
+    private fun extractPosition(raw: String): Pair<Int, Int> {
+        val match = POSITION.find(raw) ?: return -1 to -1
+        return (match.groupValues[1].toIntOrNull() ?: -1) to (match.groupValues[2].toIntOrNull() ?: -1)
+    }
+
+    private fun friendlyMessage(raw: String, line: Int, column: Int): String {
+        val where = if (line >= 1 && column >= 1) " (line $line, column $column)" else ""
+        val token = ENCOUNTERED.find(raw)?.groupValues?.get(1)?.trim()
+        return when {
+            token != null && (token.isEmpty() || token.equals("<EOF>", true)) ->
+                "The statement looks incomplete$where — check for a missing comma, type or closing parenthesis."
+            token != null ->
+                "Unexpected “$token”$where — check the SQL syntax."
+            raw.contains("Lexical error", ignoreCase = true) ->
+                "Couldn’t read the SQL$where — check for an unclosed quote or comment."
+            else ->
+                "Couldn’t parse the SQL$where — check the CREATE TABLE syntax."
         }
     }
 
@@ -178,8 +208,8 @@ object SqlDdlParser {
         } else v
     }
 
-    private fun firstLine(message: String?): String =
-        (message ?: "Invalid SQL").lineSequence().firstOrNull()?.trim()?.take(200) ?: "Invalid SQL"
-
     private val NUMBER = Regex("[-+]?\\d+(\\.\\d+)?")
+    // JavaCC reports problems as "... at line 2, column 5." and "Encountered \"FOO\"".
+    private val POSITION = Regex("line\\s+(\\d+),\\s*column\\s+(\\d+)", RegexOption.IGNORE_CASE)
+    private val ENCOUNTERED = Regex("Encountered(?:\\s+unexpected\\s+token)?:?\\s+[\"']([^\"']*)[\"']", RegexOption.IGNORE_CASE)
 }

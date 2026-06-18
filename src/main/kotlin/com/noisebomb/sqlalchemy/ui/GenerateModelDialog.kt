@@ -11,6 +11,11 @@ import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.editor.highlighter.EditorHighlighterFactory
+import com.intellij.openapi.editor.markup.EffectType
+import com.intellij.openapi.editor.markup.HighlighterLayer
+import com.intellij.openapi.editor.markup.HighlighterTargetArea
+import com.intellij.openapi.editor.markup.RangeHighlighter
+import com.intellij.openapi.editor.markup.TextAttributes
 import com.intellij.openapi.fileTypes.FileType
 import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.fileTypes.FileTypes
@@ -210,6 +215,8 @@ class GenerateModelDialog(
     private val sqlParseAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, disposable)
     // Last parse error message (null when the current DDL parsed cleanly or is empty).
     private var lastSqlError: String? = null
+    // Red wavy underline marking the parse-error position in the SQL editor.
+    private var sqlErrorHighlighter: RangeHighlighter? = null
 
     private var sqlHeaderVisible = true
     private var sqlHeaderArrowLabel: JLabel? = null
@@ -709,24 +716,50 @@ class GenerateModelDialog(
         when (val result = SqlDdlParser.parse(sqlDocument.text)) {
             is SqlParseResult.Empty -> {
                 lastSqlError = null
+                clearSqlError()
                 sqlStatusLabel.foreground = UIUtil.getLabelDisabledForeground()
                 sqlStatusLabel.text = "Paste a CREATE TABLE statement to fill the columns below."
                 updatePreview()
             }
             is SqlParseResult.Failure -> {
                 lastSqlError = result.message
+                showSqlError(result.line, result.column)
                 sqlStatusLabel.foreground = JBColor.RED
                 sqlStatusLabel.text = result.message
                 updatePreview()
             }
             is SqlParseResult.Success -> {
                 lastSqlError = null
+                clearSqlError()
                 applyParsedTable(result.table)
                 sqlStatusLabel.foreground = UIUtil.getLabelDisabledForeground()
                 val count = result.table.columns.size
                 sqlStatusLabel.text = "Parsed table “${result.table.tableName}” → $count column(s)."
             }
         }
+    }
+
+    /** Underlines the parse-error position (1-based line/column) with a red wavy line. */
+    private fun showSqlError(line: Int, column: Int) {
+        clearSqlError()
+        if (line < 1 || sqlDocument.lineCount == 0) return
+        val lineIdx = (line - 1).coerceIn(0, sqlDocument.lineCount - 1)
+        val lineStart = sqlDocument.getLineStartOffset(lineIdx)
+        val lineEnd = sqlDocument.getLineEndOffset(lineIdx)
+        val caret = (lineStart + (column - 1).coerceAtLeast(0)).coerceIn(lineStart, lineEnd)
+        // Underline from the caret to the line end; if the caret sits at the end (e.g. <EOF>),
+        // back up one character so the marker is still visible.
+        val from = if (caret >= lineEnd && lineEnd > lineStart) lineEnd - 1 else caret
+        if (lineEnd <= from) return
+        val attrs = TextAttributes(null, null, JBColor.RED, EffectType.WAVE_UNDERSCORE, Font.PLAIN)
+        sqlErrorHighlighter = sqlInputEditor.markupModel.addRangeHighlighter(
+            from, lineEnd, HighlighterLayer.ERROR, attrs, HighlighterTargetArea.EXACT_RANGE
+        )
+    }
+
+    private fun clearSqlError() {
+        sqlErrorHighlighter?.let { sqlInputEditor.markupModel.removeHighlighter(it) }
+        sqlErrorHighlighter = null
     }
 
     /** Replaces the table name, model name and column tree with the parsed DDL. */
@@ -1322,12 +1355,15 @@ class GenerateModelDialog(
             EditMode.DATA_SOURCE ->
                 return ValidationInfo("This generation mode is coming soon. Please use Manual or SQL for now.")
             EditMode.SQL -> {
+                // No component is attached on purpose: the parse error is shown inline in the
+                // status label (and underlined in the editor), so we don't want a balloon popup
+                // floating over the editor too.
                 if (sqlDocument.text.isBlank()) {
                     return if (modelNameTouched) {
-                        ValidationInfo("Paste a CREATE TABLE statement to generate a model", sqlInputEditor.contentComponent)
+                        ValidationInfo("Paste a CREATE TABLE statement to generate a model")
                     } else null
                 }
-                lastSqlError?.let { return ValidationInfo(it, sqlInputEditor.contentComponent) }
+                lastSqlError?.let { return ValidationInfo(it) }
             }
             EditMode.MANUAL -> {}
         }
