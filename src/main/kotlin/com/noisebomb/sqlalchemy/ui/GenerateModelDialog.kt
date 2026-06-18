@@ -13,6 +13,8 @@ import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.editor.highlighter.EditorHighlighterFactory
 import com.intellij.openapi.fileTypes.FileType
 import com.intellij.openapi.fileTypes.FileTypeManager
+import com.intellij.openapi.fileTypes.FileTypes
+import com.intellij.openapi.fileTypes.LanguageFileType
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.observable.properties.AtomicProperty
 import com.intellij.openapi.project.Project
@@ -44,6 +46,7 @@ import com.intellij.ui.dsl.builder.TopGap
 import com.intellij.ui.dsl.builder.panel
 import com.intellij.ui.scale.JBUIScale
 import com.intellij.ui.treeStructure.Tree
+import com.intellij.util.Alarm
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import com.noisebomb.sqlalchemy.generation.SqlAlchemyCodeGenerator
@@ -51,6 +54,9 @@ import com.noisebomb.sqlalchemy.model.SqlAlchemyColumnSpec
 import com.noisebomb.sqlalchemy.model.SqlAlchemyColumnType
 import com.noisebomb.sqlalchemy.model.SqlAlchemyGenerationMode
 import com.noisebomb.sqlalchemy.model.SqlAlchemyModelSpec
+import com.noisebomb.sqlalchemy.sql.ParsedTable
+import com.noisebomb.sqlalchemy.sql.SqlDdlParser
+import com.noisebomb.sqlalchemy.sql.SqlParseResult
 import java.awt.BorderLayout
 import java.awt.CardLayout
 import java.awt.Component
@@ -127,6 +133,13 @@ class GenerateModelDialog(
     private val pythonFileType: FileType = FileTypeManager.getInstance().getFileTypeByExtension("py")
     private val sqlFileType: FileType = FileTypeManager.getInstance().getFileTypeByExtension("sql")
 
+    // SQL syntax highlighting is provided by the (paid) "Database Tools and SQL" plugin. When it's
+    // absent the .sql extension maps to an unknown/plain type, so we fall back to a plain-text editor
+    // (parsing still works everywhere via the bundled JSqlParser).
+    private val sqlHighlightingAvailable: Boolean =
+        sqlFileType is LanguageFileType && sqlFileType != FileTypes.PLAIN_TEXT
+    private val sqlEditorFileType: FileType = if (sqlHighlightingAvailable) sqlFileType else FileTypes.PLAIN_TEXT
+
     private val disposable = Disposer.newDisposable()
 
     // Mono font shared by all inputs
@@ -172,8 +185,36 @@ class GenerateModelDialog(
     private val defaultExpressionField = EditorTextField("", project, pythonFileType)
     private val columnDescriptionArea = JBTextArea(3, 20)
 
+    // ---- Shared editor factory ----
+    private val editorFactory = EditorFactory.getInstance()
+
     // ---- SQL mode ----
-    private val sqlEditor = EditorTextField("", project, sqlFileType).apply { setOneLineMode(false) }
+    // A full editor (not an EditorTextField) so the DDL input matches the preview exactly:
+    // user theme + editor font + real scrollbars, plus line numbers, folding and SQL highlighting.
+    private val sqlDocument = editorFactory.createDocument("")
+    private val sqlInputEditor: Editor = editorFactory.createEditor(sqlDocument, project, sqlEditorFileType, false).also { editor ->
+        editor.settings.apply {
+            isLineNumbersShown = true
+            isFoldingOutlineShown = true
+            isRightMarginShown = false
+            isVirtualSpace = false
+            isLineMarkerAreaShown = false
+            isUseSoftWraps = false
+            additionalColumnsCount = 0
+            additionalLinesCount = 0
+        }
+        (editor as? EditorEx)?.setPlaceholder("-- Paste CREATE TABLE DDL here")
+    }
+    private val sqlStatusLabel = JBLabel()
+    // Debounces parsing so we don't re-parse on every keystroke while the user types/pastes DDL.
+    private val sqlParseAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, disposable)
+    // Last parse error message (null when the current DDL parsed cleanly or is empty).
+    private var lastSqlError: String? = null
+
+    private var sqlHeaderVisible = true
+    private var sqlHeaderArrowLabel: JLabel? = null
+    private var sqlHeaderExpandedDividerLocation: Int? = null
+    private var sqlSplit: JSplitPane? = null
 
     // ---- Data Source mode ----
     private val dataSourceCombo = ComboBox(arrayOf("(no connected data sources)"))
@@ -181,7 +222,6 @@ class GenerateModelDialog(
     private val dsTableCombo = ComboBox(arrayOf<String>())
 
     // ---- Preview ----
-    private val editorFactory = EditorFactory.getInstance()
     private val previewDocument = editorFactory.createDocument("")
     private val previewEditor: Editor = editorFactory.createViewer(previewDocument, project).also { editor ->
         editor.settings.apply {
@@ -210,7 +250,6 @@ class GenerateModelDialog(
     // Content area that hosts the mode-specific layout above the preview
     private val contentPanel = JPanel(BorderLayout())
     private var treeOptionsPanel: JComponent? = null
-    private var sqlSplit: JSplitPane? = null
 
     // ---- Generation options (behind the preview gear button) ----
     private var wrapColumns = true
@@ -262,6 +301,7 @@ class GenerateModelDialog(
     override fun dispose() {
         Disposer.dispose(disposable)
         editorFactory.releaseEditor(previewEditor)
+        editorFactory.releaseEditor(sqlInputEditor)
         super.dispose()
     }
 
@@ -335,6 +375,7 @@ class GenerateModelDialog(
 
     private fun onModeChanged(mode: EditMode) {
         applyModeLayout(mode)
+        if (mode == EditMode.SQL) parseSqlAndPopulate()
         updatePreview()
     }
 
@@ -427,7 +468,7 @@ class GenerateModelDialog(
             .setToolbarPosition(ActionToolbarPosition.TOP)
 
         return JPanel(BorderLayout()).apply {
-            border = JBUI.Borders.empty(0, 0, 0, 4)
+            border = JBUI.Borders.emptyRight(4)
             add(decorator.createPanel(), BorderLayout.CENTER)
             minimumSize = Dimension(JBUIScale.scale(200), JBUIScale.scale(200))
         }
@@ -445,7 +486,7 @@ class GenerateModelDialog(
         }
         val headerWrap = JPanel(BorderLayout()).apply {
             isOpaque = false
-            border = JBUI.Borders.empty(0, 0, 8, 0)
+            border = JBUI.Borders.emptyBottom(8)
             add(headerCard, BorderLayout.WEST)
         }
         optionsHeaderCard = headerCard
@@ -455,7 +496,7 @@ class GenerateModelDialog(
         optionsCardPanel.add(buildEmptyCard(), "empty")
 
         return JPanel(BorderLayout()).apply {
-            border = JBUI.Borders.empty(0, 4, 0, 0)
+            border = JBUI.Borders.emptyLeft(4)
             add(headerWrap, BorderLayout.NORTH)
             add(optionsCardPanel, BorderLayout.CENTER)
             minimumSize = Dimension(JBUIScale.scale(280), JBUIScale.scale(200))
@@ -549,14 +590,172 @@ class GenerateModelDialog(
     // SQL panel
     // -----------------------------------------------------------------------
     private fun buildSqlPanel(): JComponent {
-        sqlEditor.setPlaceholder("-- Paste CREATE TABLE DDL here")
+        sqlStatusLabel.foreground = UIUtil.getLabelDisabledForeground()
+        sqlStatusLabel.border = JBUI.Borders.emptyTop(2)
+
         return JPanel(BorderLayout(0, JBUIScale.scale(4))).apply {
             border = JBUI.Borders.empty(4)
-            add(JLabel("SQL (DDL):"), BorderLayout.NORTH)
-            add(sqlEditor, BorderLayout.CENTER)
+            add(buildSqlHeader(), BorderLayout.NORTH)
+            add(sqlInputEditor.component, BorderLayout.CENTER)
+            add(sqlStatusLabel, BorderLayout.SOUTH)
             preferredSize = Dimension(0, sqlPreferredHeight())
         }
     }
+
+    /** Title + thin separator line, matching the Preview header styling. */
+    private fun buildSqlHeader(): JComponent {
+        val arrowLabel1 = JLabel(UIUtil.getTreeExpandedIcon()).also { sqlHeaderArrowLabel = it }
+        val titleLabel1 = JLabel("SQL (DDL) ").apply { foreground = UIUtil.getLabelForeground() }
+
+        val titlePanel1 = JPanel(FlowLayout(FlowLayout.LEFT, JBUIScale.scale(4), 0)).apply {
+            isOpaque = false
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            add(arrowLabel1)
+            add(titleLabel1)
+            addMouseListener(object : MouseAdapter() {
+                override fun mouseClicked(e: MouseEvent) = toggleSqlHeader()
+            })
+        }
+
+        //val dialectDropdown
+
+        // Thin separator line between the title and the dialect dropdown (DataGrip style).
+        val separator = JSeparator(SwingConstants.HORIZONTAL).apply {
+            border = JBUI.Borders.empty(0, 16, 0, 8)
+        }
+        val separatorWrap = JPanel(GridBagLayout()).apply {
+            isOpaque = false
+            add(separator, GridBagConstraints().apply {
+                fill = GridBagConstraints.HORIZONTAL
+                weightx = 1.0
+            })
+        }
+
+        return JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(0, 2, 4, 2)
+            add(titlePanel1, BorderLayout.WEST)
+            add(separatorWrap, BorderLayout.CENTER)
+            if (!sqlHighlightingAvailable) {
+                // Parsing still works everywhere; only highlighting needs the Database Tools plugin.
+                add(JBLabel("Install “Database Tools and SQL” for syntax highlighting").apply {
+                    foreground = UIUtil.getLabelDisabledForeground()
+                    font = font.deriveFont(font.size2D - JBUIScale.scale(1f))
+                }, BorderLayout.EAST)
+            }
+        }
+    }
+
+    private fun toggleSqlHeader() {
+        sqlHeaderVisible = !sqlHeaderVisible
+        sqlHeaderArrowLabel?.icon =
+            if (sqlHeaderVisible) UIUtil.getTreeExpandedIcon()
+            else UIUtil.getTreeCollapsedIcon()
+//        FIXME
+//        val split = sqlSplit ?: return
+//        if (!sqlHeaderVisible) {
+//            sqlHeaderExpandedDividerLocation = split.dividerLocation
+//        }
+//        // Keep the divider present (for spacing) but block dragging when collapsed.
+//        split.isEnabled = sqlHeaderVisible
+//        split.revalidate()
+//        split.repaint()
+//        SwingUtilities.invokeLater {
+//            val s = verticalSplit ?: return@invokeLater
+//            if (!sqlHeaderVisible) {
+//                s.dividerLocation = s.maximumDividerLocation
+//                return@invokeLater
+//            }
+//            val fallback = (s.height * 0.5).toInt()
+//            val minSqlHeaderHeight = JBUIScale.scale(140)
+//            val upperBound = minOf(s.maximumDividerLocation, s.height - minSqlHeaderHeight)
+//            val clampedUpper = maxOf(s.minimumDividerLocation, upperBound)
+//            s.dividerLocation = (sqlHeaderExpandedDividerLocation ?: fallback)
+//                .coerceIn(s.minimumDividerLocation, clampedUpper)
+//            s.revalidate()
+//            s.repaint()
+//        }
+    }
+
+    // -----------------------------------------------------------------------
+    // SQL parsing
+    // -----------------------------------------------------------------------
+    private fun scheduleSqlParse() {
+        sqlParseAlarm.cancelAllRequests()
+        sqlParseAlarm.addRequest({ parseSqlAndPopulate() }, 300)
+    }
+
+    private fun parseSqlAndPopulate() {
+        if (modeProperty.get() != EditMode.SQL) return
+        when (val result = SqlDdlParser.parse(sqlDocument.text)) {
+            is SqlParseResult.Empty -> {
+                lastSqlError = null
+                sqlStatusLabel.foreground = UIUtil.getLabelDisabledForeground()
+                sqlStatusLabel.text = "Paste a CREATE TABLE statement to fill the columns below."
+                updatePreview()
+            }
+            is SqlParseResult.Failure -> {
+                lastSqlError = result.message
+                sqlStatusLabel.foreground = JBColor.RED
+                sqlStatusLabel.text = result.message
+                updatePreview()
+            }
+            is SqlParseResult.Success -> {
+                lastSqlError = null
+                applyParsedTable(result.table)
+                sqlStatusLabel.foreground = UIUtil.getLabelDisabledForeground()
+                val count = result.table.columns.size
+                sqlStatusLabel.text = "Parsed table “${result.table.tableName}” → $count column(s)."
+            }
+        }
+    }
+
+    /** Replaces the table name, model name and column tree with the parsed DDL. */
+    private fun applyParsedTable(table: ParsedTable) {
+        val modelName = toCamelCase(table.tableName)
+        syncing = true
+        loading = true
+        try {
+            modelNameField.text = modelName
+            val tableNameMatches = toSnakeCase(modelName) == table.tableName
+            tableNameDiffersCheckBox.isSelected = !tableNameMatches
+            tableNameField.text = table.tableName
+            if (!fileNameUserEdited) fileName = suggestedFileName(modelName)
+
+            columnsFolder.removeAllChildren()
+            for (col in table.columns) {
+                val attr = toSnakeCase(col.name).ifBlank { col.name }
+                val differs = attr != col.name
+                val spec = SqlAlchemyColumnSpec(
+                    name = attr,
+                    type = col.type,
+                    primaryKey = col.primaryKey,
+                    nullable = col.nullable,
+                    unique = col.unique,
+                    defaultExpression = col.defaultExpression,
+                    comment = col.comment,
+                    columnNameDiffers = differs,
+                    columnName = if (differs) col.name else ""
+                )
+                columnsFolder.add(DefaultMutableTreeNode(ColumnData(spec)))
+            }
+        } finally {
+            loading = false
+            syncing = false
+        }
+        treeModel.reload()
+        expandTree()
+        updateTableNameFieldState()
+        // Re-select the table so its options (and the now-filled model name) are visible.
+        tree.selectionPath = TreePath(rootNode.path)
+        modelNameTouched = true
+        updatePreview()
+    }
+
+    private fun toCamelCase(name: String): String =
+        name.split(Regex("[^A-Za-z0-9]+"))
+            .filter { it.isNotBlank() }
+            .joinToString("") { it.replaceFirstChar(Char::uppercaseChar) }
 
     // -----------------------------------------------------------------------
     // Data Source panel
@@ -607,7 +806,7 @@ class GenerateModelDialog(
 
     private fun buildPreviewHeader(): JComponent {
         val arrowLabel = JLabel(UIUtil.getTreeExpandedIcon()).also { previewArrowLabel = it }
-        val titleLabel = JLabel("Preview").apply { foreground = UIUtil.getLabelForeground() }
+        val titleLabel = JLabel("Preview ").apply { foreground = UIUtil.getLabelForeground() }
 
         val titlePanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUIScale.scale(4), 0)).apply {
             isOpaque = false
@@ -925,8 +1124,10 @@ class GenerateModelDialog(
             updateSelectedColumn { comment = columnDescriptionArea.text }
         })
 
-        sqlEditor.document.addDocumentListener(object : com.intellij.openapi.editor.event.DocumentListener {
-            override fun documentChanged(event: com.intellij.openapi.editor.event.DocumentEvent) = updatePreview()
+        sqlDocument.addDocumentListener(object : com.intellij.openapi.editor.event.DocumentListener {
+            override fun documentChanged(event: com.intellij.openapi.editor.event.DocumentEvent) {
+                if (modeProperty.get() == EditMode.SQL) scheduleSqlParse()
+            }
         }, disposable)
 
         updateTableNameFieldState()
@@ -1018,7 +1219,9 @@ class GenerateModelDialog(
     // -----------------------------------------------------------------------
     private fun updatePreview() {
         recomputeTreeErrors()
-        if (modeProperty.get() != EditMode.MANUAL || !isPreviewReady()) {
+        // SQL mode populates the same column tree as Manual, so both can render a preview.
+        // Data Source mode is not implemented yet.
+        if (modeProperty.get() == EditMode.DATA_SOURCE || !isPreviewReady()) {
             previewCardLayout.show(previewCardPanel, previewPlaceholderCard)
             return
         }
@@ -1096,8 +1299,18 @@ class GenerateModelDialog(
     }
 
     override fun doValidate(): ValidationInfo? {
-        if (modeProperty.get() != EditMode.MANUAL) {
-            return ValidationInfo("This generation mode is coming soon. Please use Manual for now.")
+        when (modeProperty.get()) {
+            EditMode.DATA_SOURCE ->
+                return ValidationInfo("This generation mode is coming soon. Please use Manual or SQL for now.")
+            EditMode.SQL -> {
+                if (sqlDocument.text.isBlank()) {
+                    return if (modelNameTouched) {
+                        ValidationInfo("Paste a CREATE TABLE statement to generate a model", sqlInputEditor.contentComponent)
+                    } else null
+                }
+                lastSqlError?.let { return ValidationInfo(it, sqlInputEditor.contentComponent) }
+            }
+            EditMode.MANUAL -> {}
         }
         val modelName = modelNameField.text.trim()
         if (modelName.isEmpty()) {

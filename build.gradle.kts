@@ -10,6 +10,10 @@ group = "com.noisebomb.sqlalchemy"
 version = "0.0.3"
 
 dependencies {
+    // Bundled standalone SQL DDL parser so SQL mode works on every IDE
+    // (including Community editions, which have no Database Tools / SQL plugin).
+    implementation(libs.jsqlparser)
+
     testImplementation(libs.junit)
 
     intellijPlatform {
