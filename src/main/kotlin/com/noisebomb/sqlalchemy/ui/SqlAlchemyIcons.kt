@@ -2,8 +2,8 @@ package com.noisebomb.sqlalchemy.ui
 
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.util.IconLoader
+import com.noisebomb.sqlalchemy.sql.SqlDialect
 import com.noisebomb.sqlalchemy.model.SqlAlchemyColumnSpec
-import com.noisebomb.sqlalchemy.model.SqlDialect
 import javax.swing.Icon
 
 /**

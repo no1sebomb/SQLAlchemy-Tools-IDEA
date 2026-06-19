@@ -1,7 +1,6 @@
 package com.noisebomb.sqlalchemy.sql
 
 import com.noisebomb.sqlalchemy.model.SqlAlchemyColumnType
-import com.noisebomb.sqlalchemy.model.SqlDialect
 import net.sf.jsqlparser.JSQLParserException
 import net.sf.jsqlparser.parser.CCJSqlParserUtil
 import net.sf.jsqlparser.statement.create.table.CreateTable

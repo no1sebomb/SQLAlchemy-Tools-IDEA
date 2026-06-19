@@ -1,22 +1,12 @@
 package com.noisebomb.sqlalchemy.model
 
+import com.noisebomb.sqlalchemy.sql.SqlDialect
+
+
 enum class SqlAlchemyGenerationMode {
     MANUAL,
     DATA_SOURCE,
     SQL
-}
-
-/** SQL dialect used to interpret DDL pasted in SQL mode (affects type mapping ambiguities). */
-enum class SqlDialect(val displayName: String) {
-    GENERIC("Generic SQL"),
-    POSTGRESQL("PostgreSQL"),
-    MYSQL("MySQL"),
-    MARIADB("MariaDB"),
-    SQL_SERVER("SQL Server"),
-    ORACLE("Oracle"),
-    SQLITE("SQLite");
-
-    override fun toString(): String = displayName
 }
 
 enum class SqlAlchemyColumnType(

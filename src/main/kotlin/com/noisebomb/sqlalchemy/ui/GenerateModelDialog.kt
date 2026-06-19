@@ -65,7 +65,7 @@ import com.noisebomb.sqlalchemy.model.SqlAlchemyColumnSpec
 import com.noisebomb.sqlalchemy.model.SqlAlchemyColumnType
 import com.noisebomb.sqlalchemy.model.SqlAlchemyGenerationMode
 import com.noisebomb.sqlalchemy.model.SqlAlchemyModelSpec
-import com.noisebomb.sqlalchemy.model.SqlDialect
+import com.noisebomb.sqlalchemy.sql.SqlDialect
 import com.noisebomb.sqlalchemy.sql.ParsedTable
 import com.noisebomb.sqlalchemy.sql.SqlDdlParser
 import com.noisebomb.sqlalchemy.sql.SqlParseResult
