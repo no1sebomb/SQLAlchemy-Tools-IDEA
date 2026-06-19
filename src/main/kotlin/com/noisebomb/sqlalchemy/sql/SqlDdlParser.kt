@@ -1,6 +1,7 @@
 package com.noisebomb.sqlalchemy.sql
 
 import com.noisebomb.sqlalchemy.model.SqlAlchemyColumnType
+import com.noisebomb.sqlalchemy.model.SqlDialect
 import net.sf.jsqlparser.JSQLParserException
 import net.sf.jsqlparser.parser.CCJSqlParserUtil
 import net.sf.jsqlparser.statement.create.table.CreateTable
@@ -45,7 +46,7 @@ sealed interface SqlParseResult {
  */
 object SqlDdlParser {
 
-    fun parse(sql: String): SqlParseResult {
+    fun parse(sql: String, dialect: SqlDialect = SqlDialect.GENERIC): SqlParseResult {
         if (sql.isBlank()) return SqlParseResult.Empty
 
         val createTable = try {
@@ -55,7 +56,7 @@ object SqlDdlParser {
         } ?: return SqlParseResult.Failure("No CREATE TABLE statement found — paste a CREATE TABLE … statement.")
 
         return try {
-            SqlParseResult.Success(buildTable(createTable))
+            SqlParseResult.Success(buildTable(createTable, dialect))
         } catch (e: Throwable) {
             SqlParseResult.Failure(e.message ?: "Could not read the table definition.")
         }
@@ -98,7 +99,7 @@ object SqlDdlParser {
         return statements.filterIsInstance<CreateTable>().firstOrNull()
     }
 
-    private fun buildTable(ct: CreateTable): ParsedTable {
+    private fun buildTable(ct: CreateTable, dialect: SqlDialect): ParsedTable {
         // Table-level PRIMARY KEY / UNIQUE constraints, e.g. PRIMARY KEY (id) or UNIQUE (email).
         val pkColumns = HashSet<String>()
         val uniqueColumns = HashSet<String>()
@@ -142,7 +143,7 @@ object SqlDdlParser {
 
             ParsedColumn(
                 name = name,
-                type = mapType(def.colDataType?.dataType ?: ""),
+                type = mapType(def.colDataType?.dataType ?: "", def.colDataType?.argumentsStringList, dialect),
                 primaryKey = primaryKey,
                 nullable = nullable,
                 unique = unique,
@@ -161,9 +162,15 @@ object SqlDdlParser {
     }
 
     /** Maps a raw SQL type name to the closest [SqlAlchemyColumnType]. */
-    private fun mapType(rawType: String): SqlAlchemyColumnType {
+    private fun mapType(rawType: String, args: List<String>?, dialect: SqlDialect): SqlAlchemyColumnType {
         val t = rawType.uppercase().substringBefore('(').trim()
+        val singleArg = args?.singleOrNull()
         return when {
+            // MySQL/MariaDB has no native boolean; TINYINT(1) is the BOOL/BOOLEAN convention.
+            t == "TINYINT" && singleArg == "1" && dialect in setOf(SqlDialect.MYSQL, SqlDialect.MARIADB) ->
+                SqlAlchemyColumnType.BOOLEAN
+            // Oracle has no native boolean; NUMBER(1) is the common flag convention.
+            t == "NUMBER" && singleArg == "1" && dialect == SqlDialect.ORACLE -> SqlAlchemyColumnType.BOOLEAN
             t in setOf("BIGINT", "INT8", "BIGSERIAL", "SERIAL8") -> SqlAlchemyColumnType.BIG_INTEGER
             t in setOf("INT", "INTEGER", "INT4", "INT2", "SERIAL", "SMALLSERIAL",
                 "SMALLINT", "TINYINT", "MEDIUMINT") -> SqlAlchemyColumnType.INTEGER

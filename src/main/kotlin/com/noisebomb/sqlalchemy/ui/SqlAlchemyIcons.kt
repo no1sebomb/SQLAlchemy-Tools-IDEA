@@ -1,7 +1,9 @@
 package com.noisebomb.sqlalchemy.ui
 
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.util.IconLoader
 import com.noisebomb.sqlalchemy.model.SqlAlchemyColumnSpec
+import com.noisebomb.sqlalchemy.model.SqlDialect
 import javax.swing.Icon
 
 /**
@@ -33,6 +35,17 @@ object SqlAlchemyIcons {
         spec.primaryKey -> ColumnPrimaryKey
         !spec.nullable -> ColumnNotNull
         else -> Column
+    }
+
+    /** Vendor logo for the given SQL dialect (platform-bundled, no extra plugin required). */
+    fun forDialect(dialect: SqlDialect): Icon = when (dialect) {
+        SqlDialect.GENERIC -> AllIcons.Nodes.DataTables
+        SqlDialect.POSTGRESQL -> AllIcons.Providers.Postgresql
+        SqlDialect.MYSQL -> AllIcons.Providers.Mysql
+        SqlDialect.MARIADB -> AllIcons.Providers.Mariadb
+        SqlDialect.SQL_SERVER -> AllIcons.Providers.SqlServer
+        SqlDialect.ORACLE -> AllIcons.Providers.Oracle
+        SqlDialect.SQLITE -> AllIcons.Providers.Sqlite
     }
 
     private fun load(path: String): Icon = IconLoader.getIcon(path, SqlAlchemyIcons::class.java)

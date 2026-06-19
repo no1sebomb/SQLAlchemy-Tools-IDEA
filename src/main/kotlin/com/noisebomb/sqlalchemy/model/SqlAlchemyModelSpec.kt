@@ -6,6 +6,19 @@ enum class SqlAlchemyGenerationMode {
     SQL
 }
 
+/** SQL dialect used to interpret DDL pasted in SQL mode (affects type mapping ambiguities). */
+enum class SqlDialect(val displayName: String) {
+    GENERIC("Generic SQL"),
+    POSTGRESQL("PostgreSQL"),
+    MYSQL("MySQL"),
+    MARIADB("MariaDB"),
+    SQL_SERVER("SQL Server"),
+    ORACLE("Oracle"),
+    SQLITE("SQLite");
+
+    override fun toString(): String = displayName
+}
+
 enum class SqlAlchemyColumnType(
     val displayName: String,
     val sqlalchemyType: String,
@@ -52,5 +65,7 @@ data class SqlAlchemyModelSpec(
     val attributeTypesMapping: Boolean = true,
     val useLegacyColumns: Boolean = false,
     val fileCodingHeader: Boolean = false,
+    /** Dialect the SQL (DDL) source was interpreted as; irrelevant outside [SqlAlchemyGenerationMode.SQL]. */
+    val sqlDialect: SqlDialect = SqlDialect.GENERIC,
     val columns: List<SqlAlchemyColumnSpec>
 )

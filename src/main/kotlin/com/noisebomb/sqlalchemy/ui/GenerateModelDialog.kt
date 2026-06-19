@@ -43,6 +43,7 @@ import com.intellij.ui.ComboboxSpeedSearch
 import com.intellij.ui.EditorTextField
 import com.intellij.ui.JBColor
 import com.intellij.ui.RoundedLineBorder
+import com.intellij.ui.SimpleListCellRenderer
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.ToolbarDecorator
 import com.intellij.ui.components.JBCheckBox
@@ -64,6 +65,7 @@ import com.noisebomb.sqlalchemy.model.SqlAlchemyColumnSpec
 import com.noisebomb.sqlalchemy.model.SqlAlchemyColumnType
 import com.noisebomb.sqlalchemy.model.SqlAlchemyGenerationMode
 import com.noisebomb.sqlalchemy.model.SqlAlchemyModelSpec
+import com.noisebomb.sqlalchemy.model.SqlDialect
 import com.noisebomb.sqlalchemy.sql.ParsedTable
 import com.noisebomb.sqlalchemy.sql.SqlDdlParser
 import com.noisebomb.sqlalchemy.sql.SqlParseResult
@@ -235,6 +237,13 @@ class GenerateModelDialog(
     private var sqlSplit: JSplitPane? = null
     private var sqlHeaderComponent: JComponent? = null
     private var sqlContentPanel: JComponent? = null
+    private val sqlDialectCombo = ComboBox(SqlDialect.entries.toTypedArray()).apply {
+        toolTipText = "SQL dialect"
+        renderer = SimpleListCellRenderer.create { label, value, _ ->
+            label.text = value.displayName
+            label.icon = SqlAlchemyIcons.forDialect(value)
+        }
+    }
 
     // ---- Data Source mode ----
     private val dataSourceCombo = ComboBox(arrayOf("(no connected data sources)"))
@@ -338,6 +347,7 @@ class GenerateModelDialog(
         attributeTypesMapping = attributeTypesMapping,
         useLegacyColumns = useLegacyColumns,
         fileCodingHeader = fileCodingHeader,
+        sqlDialect = sqlDialectCombo.selectedItem as SqlDialect,
         columns = columnSpecs()
     )
 
@@ -674,6 +684,7 @@ class GenerateModelDialog(
             }
             add(iconButton(AllIcons.Actions.MenuPaste, "Paste SQL from clipboard") { pasteSql() })
             add(iconButton(AllIcons.Actions.Copy, "Copy SQL") { copySql() })
+            add(sqlDialectCombo)
         }
 
         return JPanel(BorderLayout()).apply {
@@ -751,7 +762,8 @@ class GenerateModelDialog(
 
     private fun parseSqlAndPopulate() {
         if (modeProperty.get() != EditMode.SQL) return
-        when (val result = SqlDdlParser.parse(sqlDocument.text)) {
+        val dialect = sqlDialectCombo.selectedItem as SqlDialect
+        when (val result = SqlDdlParser.parse(sqlDocument.text, dialect)) {
             is SqlParseResult.Empty -> {
                 lastSqlError = null
                 clearSqlError()
@@ -1219,6 +1231,9 @@ class GenerateModelDialog(
                 if (modeProperty.get() == EditMode.SQL) scheduleSqlParse()
             }
         }, disposable)
+        // Dialect affects ambiguous type mappings (e.g. MySQL TINYINT(1) -> bool); re-parse the
+        // already-pasted DDL so the columns/preview reflect the newly selected dialect.
+        sqlDialectCombo.addActionListener { parseSqlAndPopulate() }
 
         updateTableNameFieldState()
         updateColumnNameFieldState()
