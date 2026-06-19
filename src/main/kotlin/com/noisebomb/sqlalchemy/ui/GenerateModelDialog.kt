@@ -347,7 +347,7 @@ class GenerateModelDialog(
     override fun createCenterPanel(): JComponent {
         val root = JPanel(BorderLayout(0, JBUIScale.scale(8)))
         root.border = JBUI.Borders.empty(8)
-        root.preferredSize = Dimension(JBUIScale.scale(820), JBUIScale.scale(700))
+        root.preferredSize = Dimension(JBUIScale.scale(720), JBUIScale.scale(700))
 
         root.add(buildModeSelector(), BorderLayout.NORTH)
 
@@ -369,7 +369,7 @@ class GenerateModelDialog(
                 val v = verticalSplit ?: return
                 if (v.height <= 0) return
                 horizontalSplit?.setDividerLocation(0.33)
-                v.setDividerLocation(0.59)
+                v.setDividerLocation(0.68)
                 v.removeComponentListener(this)
             }
         })
@@ -435,7 +435,7 @@ class GenerateModelDialog(
         contentPanel.repaint()
     }
 
-    private fun sqlPreferredHeight(): Int = previewEditor.lineHeight * 5 + JBUIScale.scale(34)
+    private fun sqlPreferredHeight(): Int = previewEditor.lineHeight * 9 + JBUIScale.scale(34)
 
     // -----------------------------------------------------------------------
     // Tree + options split
@@ -874,10 +874,10 @@ class GenerateModelDialog(
                 foreground = UIUtil.getLabelDisabledForeground()
                 font = font.deriveFont(Font.ITALIC)
             }, BorderLayout.CENTER)
-            preferredSize = Dimension(0, JBUIScale.scale(160))
+            preferredSize = Dimension(0, JBUIScale.scale(140))
         }
         val editorComponent = previewEditor.component.also {
-            it.preferredSize = Dimension(0, JBUIScale.scale(160))
+            it.preferredSize = Dimension(0, JBUIScale.scale(140))
         }
         previewCardPanel.add(placeholderPanel, previewPlaceholderCard)
         previewCardPanel.add(editorComponent, previewEditorCard)
