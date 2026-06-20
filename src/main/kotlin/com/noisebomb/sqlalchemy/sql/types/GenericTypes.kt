@@ -60,9 +60,7 @@ object GenericColumnTypes {
         docsUrl = "https://docs.sqlalchemy.org/en/21/core/type_basics.html#sqlalchemy.types.Date",
         sqlalchemyTypeName = "Date",
         sqlalchemyImports = listOf(ImportDefinition("sqlalchemy.types", "Date")),
-        annotation = AnnotationResolver { _, _ ->
-            AnnotationSpec(type = "date", imports = listOf(ImportDefinition("datetime", "date")))
-        },
+        annotation = DATE_ANNOTATION,
         sqlAliases = listOf(SqlAlias("DATE")),
     )
 
@@ -70,15 +68,7 @@ object GenericColumnTypes {
         id = "datetime",
         name = "DateTime",
         parameters = listOf(
-            BooleanParameter(
-                id = "timezone",
-                label = "Timezone aware",
-                description = """
-                    Indicates that the datetime type should enable timezone support, if available on the
-                    base date/time-holding type only.
-                """.trimIndent(),
-                defaultValue = false,
-            ),
+            TIMEZONE_PARAM,
         ),
         description = """
             A type for `datetime.datetime()` objects.
@@ -86,9 +76,7 @@ object GenericColumnTypes {
         docsUrl = "https://docs.sqlalchemy.org/en/21/core/type_basics.html#sqlalchemy.types.DateTime",
         sqlalchemyTypeName = "DateTime",
         sqlalchemyImports = listOf(ImportDefinition("sqlalchemy.types", "DateTime")),
-        annotation = AnnotationResolver { _, _ ->
-            AnnotationSpec(type = "datetime", imports = listOf(ImportDefinition("datetime", "datetime")))
-        },
+        annotation = DATETIME_ANNOTATION,
         sqlAliases = listOf(
             SqlAlias("DATETIME"),
             SqlAlias("DATETIME2"),
@@ -347,7 +335,7 @@ object GenericColumnTypes {
         id = "time",
         name = "Time",
         parameters = listOf(
-            BooleanParameter(id = "timezone", label = "Timezone aware", defaultValue = false),
+            TIMEZONE_PARAM,
         ),
         description = """
             A type for `datetime.time()` objects.
@@ -355,9 +343,7 @@ object GenericColumnTypes {
         docsUrl = "https://docs.sqlalchemy.org/en/21/core/type_basics.html#sqlalchemy.types.Time",
         sqlalchemyTypeName = "Time",
         sqlalchemyImports = listOf(ImportDefinition("sqlalchemy.types", "Time")),
-        annotation = AnnotationResolver { _, _ ->
-            AnnotationSpec(type = "time", imports = listOf(ImportDefinition("datetime", "time")))
-        },
+        annotation = TIME_ANNOTATION,
         sqlAliases = listOf(SqlAlias("TIME"), SqlAlias("TIMETZ")),
     )
 
@@ -399,6 +385,17 @@ object GenericColumnTypes {
     val UUID = ColumnTypeDefinition(
         id = "uuid",
         name = "Uuid",
+        parameters = listOf(
+            BooleanParameter(
+                id = "as_uuid",
+                label = "As UUID",
+                description = """
+                    If True, values will be interpreted as Python uuid objects, 
+                    converting to/from string via the DBAPI.
+                """.trimIndent(),
+                defaultValue = true,
+            )
+        ),
         description = """
             Represent a database agnostic UUID datatype.
 
@@ -422,32 +419,7 @@ object GenericColumnTypes {
     val ARRAY = ColumnTypeDefinition(
         id = "array",
         name = "Array",
-        parameters = listOf(
-            TypeRefParameter(id = "item_type", label = "Item type"),
-            BooleanParameter(
-                id = "as_tuple",
-                label = "As tuple",
-                description = """
-                    Return results as tuples instead of lists.
-                """.trimIndent(),
-                defaultValue = false,
-            ),
-            IntParameter(
-                id = "dimensions",
-                label = "Dimensions",
-                description = "Fixed number of array dimensions for DDL/codegen.",
-                positional = false,
-                optional = true,
-                min = 1,
-                max = 10,
-            ),
-            BooleanParameter(
-                id = "zero_indexes",
-                label = "Zero indexes",
-                description = "Convert between Python zero-based and SQL one-based indexes.",
-                defaultValue = false,
-            ),
-        ),
+        parameters = ARRAY_LIKE_PARAMS,
         description = """
             Represent a SQL Array type.
 
@@ -457,35 +429,14 @@ object GenericColumnTypes {
         docsUrl = "https://docs.sqlalchemy.org/en/21/core/type_basics.html#sqlalchemy.types.ARRAY",
         sqlalchemyTypeName = "ARRAY",
         sqlalchemyImports = listOf(ImportDefinition("sqlalchemy.types", "ARRAY")),
-        annotation = AnnotationResolver { instance, registry ->
-            val itemInstance = instance.children["item_type"]
-            if (itemInstance == null) {
-                AnnotationSpec("list")
-            } else {
-                val itemDef = registry.getById(itemInstance.definitionId)
-                val itemAnno = itemDef.resolveAnnotation(itemInstance, registry)
-                val container = if (instance.bool("as_tuple") == true) "tuple" else "list"
-                val dimensions = (instance.int("dimensions") ?: 1).coerceAtLeast(1)
-                AnnotationSpec(
-                    type = generateNested(container, itemAnno.type, dimensions),
-                    imports = itemAnno.imports,
-                )
-            }
-        },
+        annotation = ARRAY_ANNOTATION,
     )
 
     val JSON = ColumnTypeDefinition(
         id = "json",
         name = "JSON",
         parameters = listOf(
-            BooleanParameter(
-                id = "none_as_null",
-                label = "None as null",
-                description = """
-                    If True, persist the value None as a SQL NULL value, not the JSON encoding of `null`.
-                """.trimIndent(),
-                defaultValue = false,
-            ),
+            NONE_AS_NULL_PARAM,
         ),
         description = """
             Represent a SQL JSON type.

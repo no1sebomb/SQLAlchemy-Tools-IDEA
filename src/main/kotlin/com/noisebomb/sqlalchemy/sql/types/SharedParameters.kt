@@ -87,6 +87,76 @@ internal fun asDecimalParam(default: Boolean): TypeParameter = BooleanParameter(
 )
 
 // ---------------------------------------------------------------------------
+// Date & time parameters
+//   Time/DateTime share the same `timezone` parameter.
+// ---------------------------------------------------------------------------
+
+internal val TIMEZONE_PARAM: TypeParameter = BooleanParameter(
+    id = "timezone",
+    label = "Timezone aware",
+    description = """
+        Indicates that the date/time type should enable timezone support, if available on the
+        base date/time-holding type only.
+    """.trimIndent(),
+    defaultValue = false,
+)
+
+// ---------------------------------------------------------------------------
+// Array parameters
+// ---------------------------------------------------------------------------
+
+internal val NESTED_TYPE_PARAM: TypeParameter = TypeRefParameter(
+    id = "item_type",
+    label = "Items type",
+    description = """
+        The data type of items of this array. Note that dimensionality is irrelevant here, so multi-dimensional 
+        arrays like `INTEGER[][]`, are constructed as `ARRAY(Integer)`, not as `ARRAY(ARRAY(Integer))` or such.
+    """.trimIndent()
+)
+
+internal var AS_TUPLE_PARAM: TypeParameter = BooleanParameter(
+    id = "as_tuple",
+    label = "As tuple",
+    description = "Return results as tuples instead of lists.",
+    defaultValue = false,
+)
+
+internal val DIMENSIONS_PARAM: TypeParameter = IntParameter(
+    id = "dimensions",
+    label = "Dimensions",
+    description = "Fixed number of array dimensions for DDL/codegen.",
+    positional = false,
+    optional = true,
+    min = 1,
+    max = 10,  // Sanity limit
+)
+
+internal val ZERO_INDEXES_PARAM: TypeParameter = BooleanParameter(
+    id = "zero_indexes",
+    label = "Zero indexes",
+    description = "Convert between Python zero-based and SQL one-based indexes.",
+    defaultValue = false,
+)
+
+internal val ARRAY_LIKE_PARAMS: List<TypeParameter> = listOf(
+    NESTED_TYPE_PARAM,
+    AS_TUPLE_PARAM,
+    DIMENSIONS_PARAM,
+    ZERO_INDEXES_PARAM,
+)
+
+// ---------------------------------------------------------------------------
+// JSON parameters
+// ---------------------------------------------------------------------------
+
+internal val NONE_AS_NULL_PARAM: TypeParameter = BooleanParameter(
+    id = "none_as_null",
+    label = "None as null",
+    description = "If True, persist the value None as a SQL NULL value, not the JSON encoding of `null`",
+    defaultValue = false,
+)
+
+// ---------------------------------------------------------------------------
 // Shared annotation resolvers
 // ---------------------------------------------------------------------------
 
@@ -95,6 +165,15 @@ internal val STR_ANNOTATION = AnnotationResolver { _, _ -> AnnotationSpec("str")
 internal val INT_ANNOTATION = AnnotationResolver { _, _ -> AnnotationSpec("int") }
 internal val BYTES_ANNOTATION = AnnotationResolver { _, _ -> AnnotationSpec("bytes") }
 internal val DICT_ANNOTATION = AnnotationResolver { _, _ -> AnnotationSpec("dict") }
+internal val DATE_ANNOTATION = AnnotationResolver { _, _ ->
+    AnnotationSpec(type = "date", imports = listOf(ImportDefinition("datetime", "date")))
+}
+internal val TIME_ANNOTATION = AnnotationResolver { _, _ ->
+    AnnotationSpec(type = "time", imports = listOf(ImportDefinition("datetime", "time")))
+}
+internal val DATETIME_ANNOTATION = AnnotationResolver { _, _ ->
+    AnnotationSpec(type = "datetime", imports = listOf(ImportDefinition("datetime", "datetime")))
+}
 
 /**
  * Common `asdecimal`-aware resolver shared by Numeric/Float/Double: returns `Decimal` when
@@ -108,5 +187,25 @@ internal val DECIMAL_OR_FLOAT_ANNOTATION = AnnotationResolver { instance, _ ->
         )
     } else {
         AnnotationSpec("float")
+    }
+}
+
+/**
+ * Common resolver used for ARRAY types, returns generic `list` or `tuple` depending on the
+ * `as_tuple` parameter.
+ */
+internal val ARRAY_ANNOTATION = AnnotationResolver { instance, registry ->
+    val itemInstance = instance.children["item_type"]
+    val container = if (instance.bool("as_tuple") == true) "tuple" else "list"
+    if (itemInstance == null) {
+        AnnotationSpec(container)
+    } else {
+        val itemDef = registry.getById(itemInstance.definitionId)
+        val itemAnno = itemDef.resolveAnnotation(itemInstance, registry)
+        val dimensions = (instance.int("dimensions") ?: 1).coerceAtLeast(1)
+        AnnotationSpec(
+            type = generateNested(container, itemAnno.type, dimensions),
+            imports = itemAnno.imports,
+        )
     }
 }
