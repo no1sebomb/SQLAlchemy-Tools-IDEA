@@ -159,6 +159,16 @@ data class SqlAlias(
 )
 
 // ---------------------------------------------------------------------------
+// Docs wrapper
+// ---------------------------------------------------------------------------
+
+
+data class Docs(
+    val cls: String,
+    val text: String? = null,
+)
+
+// ---------------------------------------------------------------------------
 // Column type definition
 // ---------------------------------------------------------------------------
 
@@ -175,10 +185,6 @@ data class ColumnTypeDefinition(
     val name: String,
     val parameters: List<TypeParameter> = emptyList(),
 
-    /** Markdown-ish docs body used by tooltips/popovers. */
-    val description: String? = null,
-    val docsUrl: String? = null,
-
     val sqlalchemyTypeName: String,
     val sqlalchemyImports: List<ImportDefinition>,
 
@@ -192,6 +198,9 @@ data class ColumnTypeDefinition(
      * over when [dialect] is active. Only meaningful when [dialect] != GENERIC.
      */
     val supersedes: String? = null,
+
+    /** HTML docs body used by tooltips/popovers. */
+    val docs: Docs,
 )
 
 fun ColumnTypeDefinition.resolveAnnotation(

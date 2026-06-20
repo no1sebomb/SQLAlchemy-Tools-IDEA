@@ -174,6 +174,9 @@ internal val TIME_ANNOTATION = AnnotationResolver { _, _ ->
 internal val DATETIME_ANNOTATION = AnnotationResolver { _, _ ->
     AnnotationSpec(type = "datetime", imports = listOf(ImportDefinition("datetime", "datetime")))
 }
+internal val TIMEDELTA_ANNOTATION = AnnotationResolver { _, _ ->
+    AnnotationSpec(type = "datetime", imports = listOf(ImportDefinition("datetime", "timedelta")))
+}
 
 /**
  * Common `asdecimal`-aware resolver shared by Numeric/Float/Double: returns `Decimal` when
