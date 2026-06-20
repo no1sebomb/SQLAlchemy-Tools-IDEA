@@ -1,5 +1,7 @@
 package com.noisebomb.sqlalchemy.sql.types
 
+import com.noisebomb.sqlalchemy.sql.SqlDialect
+
 /**
  * Singleton entry point for all built-in [ColumnTypeDefinition]s.
  *
@@ -13,4 +15,17 @@ object ColumnTypes {
         GenericColumnTypes.ALL +
             PostgresqlColumnTypes.ALL,
     )
+
+    /**
+     * Root SQLAlchemy docs page for [dialect]. Used to build per-type anchor URLs of the
+     * shape `<DOCS_URL>#<def.docs.cls>` for the hint popup and inline `#id` markdown links.
+     *
+     * Dialects that don't yet have their own docs page return `null` — callers should treat
+     * that as "no link" and gracefully degrade to plain text.
+     */
+    fun docsUrlFor(dialect: SqlDialect): String? = when (dialect) {
+        SqlDialect.GENERIC -> GenericColumnTypes.DOCS_URL
+        SqlDialect.POSTGRESQL -> PostgresqlColumnTypes.DOCS_URL
+        else -> null
+    }
 }

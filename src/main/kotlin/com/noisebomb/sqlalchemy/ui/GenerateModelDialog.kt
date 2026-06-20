@@ -32,7 +32,7 @@ import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.ValidationInfo
 import com.intellij.openapi.ui.popup.JBPopup
 import com.intellij.ui.HideableDecorator
-import com.intellij.ui.HyperlinkLabel
+import com.intellij.ui.ColorUtil
 import com.intellij.ui.awt.RelativePoint
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.util.Disposer
@@ -112,6 +112,7 @@ import javax.swing.Icon
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
+import javax.swing.JEditorPane
 import javax.swing.JSeparator
 import javax.swing.JSplitPane
 import javax.swing.JTextField
@@ -120,6 +121,7 @@ import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
+import javax.swing.event.HyperlinkEvent
 import javax.swing.plaf.basic.BasicSplitPaneDivider
 import javax.swing.plaf.basic.BasicSplitPaneUI
 import javax.swing.tree.DefaultMutableTreeNode
@@ -1468,12 +1470,12 @@ class GenerateModelDialog(
 
     /**
      * Just toggles visibility — the popup contents are built on hover so they always reflect the
-     * currently-selected definition (no need to pre-cache anything here).
+     * currently-selected definition (no need to pre-cache anything here). Every definition ships
+     * with at least a [Docs.cls] header, so the hint icon is visible whenever a type is selected.
      */
     private fun updateTypeHint(def: ColumnTypeDefinition?) {
-        val hasContent = def != null && (!def.description.isNullOrBlank() || !def.docsUrl.isNullOrBlank())
-        typeHintIcon.isVisible = hasContent
-        if (!hasContent && typeHintPopup?.isVisible == true) {
+        typeHintIcon.isVisible = (def != null)
+        if (def == null && typeHintPopup?.isVisible == true) {
             typeHintAlarm.cancelAllRequests()
             typeHintPopup?.cancel()
             typeHintPopup = null
@@ -1499,7 +1501,6 @@ class GenerateModelDialog(
 
     private fun showTypeHintPopup() {
         val def = typeCombo.selectedItem as? ColumnTypeDefinition ?: return
-        if (def.description.isNullOrBlank() && def.docsUrl.isNullOrBlank()) return
         if (typeHintPopup?.isVisible == true) return
         val content = buildTypeHintContent(def)
         val popup = JBPopupFactory.getInstance()
@@ -1515,26 +1516,28 @@ class GenerateModelDialog(
         popup.show(RelativePoint.getSouthOf(typeHintIcon))
     }
 
+    /**
+     * Two stacked sections:
+     *   - HEADER  `class sqlalchemy.types.ARRAY ↗` — fully clickable; opens the SQLAlchemy
+     *             docs page (dialect docs URL + `#<cls>`). The trailing arrow is
+     *             [AllIcons.Ide.External_link_arrow] so the link affordance reads at a glance.
+     *   - CENTER  markdown body in a JEditorPane (CSS-styled <code>/<pre>, clickable inline
+     *             links, lists). The bottom "View SQLAlchemy documentation" footer is gone
+     *             since the header itself is now the link.
+     */
     private fun buildTypeHintContent(def: ColumnTypeDefinition): JComponent {
         val panel = JPanel(BorderLayout(0, JBUIScale.scale(8))).apply {
             border = JBUI.Borders.empty(10, 14)
             background = UIUtil.getToolTipBackground()
             isOpaque = true
         }
-        if (!def.description.isNullOrBlank()) {
-            // No fixed width / height — the label sizes to its content, but `max-width` keeps
-            // long paragraphs from stretching past a comfortable line length.
-            val desc = JBLabel(
-                "<html><div style='max-width: 460px;'>${formatTypeHintHtml(def.description)}</div></html>"
-            ).apply { verticalAlignment = SwingConstants.TOP }
-            panel.add(desc, BorderLayout.CENTER)
+
+        panel.add(buildTypeHintHeader(def), BorderLayout.NORTH)
+
+        if (!def.docs.text.isNullOrBlank()) {
+            panel.add(buildTypeHintBody(def.docs.text), BorderLayout.CENTER)
         }
-        if (!def.docsUrl.isNullOrBlank()) {
-            val link = HyperlinkLabel("Open SQLAlchemy documentation").apply {
-                setHyperlinkTarget(def.docsUrl)
-            }
-            panel.add(link, BorderLayout.SOUTH)
-        }
+
         // Mouse listener on the popup keeps it alive while the cursor is inside. Walk the
         // children so hovering the link doesn't trigger a `panel` exit event.
         val keepAliveListener = object : MouseAdapter() {
@@ -1544,6 +1547,132 @@ class GenerateModelDialog(
         addMouseListenerRecursively(panel, keepAliveListener)
         return panel
     }
+
+    /**
+     * Header reproduces the look of the upstream SQLAlchemy docs:
+     *   `class` in default weight, then `<module-path>.` in monospace, then the final
+     *   class name in big, bold monospace. CSS `font-size` is honored by Swing's
+     *   HTMLEditorKit, so the bump renders inside a single JBLabel.
+     *
+     * Clicks anywhere on the header (label or arrow) browse to the docs URL via
+     * [BrowserUtil]; if the dialect has no docs URL, the arrow is omitted and the row
+     * stays inert.
+     */
+    private fun buildTypeHintHeader(def: ColumnTypeDefinition): JComponent {
+        val cls = def.docs.cls
+        val lastDot = cls.lastIndexOf('.')
+        val prefix = if (lastDot < 0) "" else cls.substring(0, lastDot + 1)
+        val name = if (lastDot < 0) cls else cls.substring(lastDot + 1)
+
+        // Theme-aware link color (auto-switches between light and dark variants); fall back
+        // to the standard Swing link blue if the API isn't available for any reason.
+        val linkHex = colorToHex(JBUI.CurrentTheme.Link.Foreground.ENABLED)
+
+        val text = JBLabel(
+            buildString {
+                append("<html>")
+                // Wrap the whole header in the link color so the row reads as a single hyperlink
+                // (matches the upstream docs styling: "class sqlalchemy.types.ARRAY" all blue).
+                append("<span style='color: $linkHex'>")
+                append("class ")
+                append("<span style='font-family: Monospaced'>")
+                append(escapeHtml(prefix))
+                append("</span>")
+                append("<span style='font-family: Monospaced; font-size: 14pt; font-weight: bold'>")
+                append(escapeHtml(name))
+                append("</span>")
+                append("</span>")
+                append("</html>")
+            }
+        )
+
+        val row = JPanel(FlowLayout(FlowLayout.LEFT, JBUIScale.scale(4), 0)).apply {
+            isOpaque = false
+            add(text)
+        }
+
+        ColumnTypes.docsUrlFor(def.dialect)?.let { root ->
+            val url = "$root#${def.docs.cls}"
+            row.add(JBLabel(AllIcons.Ide.External_link_arrow))
+            row.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            text.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            val opener = object : MouseAdapter() {
+                override fun mouseClicked(e: MouseEvent) {
+                    BrowserUtil.browse(url)
+                }
+            }
+            // Listen on every child so the click works wherever the cursor lands.
+            addMouseListenerRecursively(row, opener)
+        }
+        return row
+    }
+
+    /**
+     * Renders the markdown body as a JEditorPane.
+     *
+     * JEditorPane (HTMLEditorKit) gives us:
+     *   - real CSS-driven `<code>` / `<pre>` with a faint contrasting background so monospace
+     *     passages stand out (JLabel's HTML support refuses to honor `<code>` font-family),
+     *   - a HyperlinkListener so internal `#id` links (resolved by [resolveMarkdownLink]) and
+     *     plain absolute URLs in the docs body are clickable.
+     *
+     * Width is pinned to 600 px (was 460 — long Table(...) examples were getting clipped);
+     * height is computed after a pre-layout pass so the popup sizes correctly.
+     */
+    private fun buildTypeHintBody(markdown: String): JComponent {
+        val targetWidth = JBUIScale.scale(600)
+        val codeBgHex = colorToHex(codeBackgroundColor())
+        // The `<style>` block is read by HTMLEditorKit at parse time — keep it minimal.
+        val html = """
+            <html>
+            <head>
+            <style>
+            body { font-family: sans-serif; }
+            code { font-family: Monospaced; background-color: $codeBgHex; }
+            pre { font-family: Monospaced; background-color: $codeBgHex; }
+            ul { margin-left: 16px; }
+            ol { margin-left: 18px; }
+            li { margin-bottom: 2px; }
+            </style>
+            </head>
+            <body>
+            ${renderTypeMarkdown(markdown)}
+            </body>
+            </html>
+        """.trimIndent()
+        val pane = JEditorPane().apply {
+            contentType = "text/html"
+            text = html
+            isEditable = false
+            isOpaque = false
+            border = null
+            background = UIUtil.getToolTipBackground()
+            addHyperlinkListener { event ->
+                if (event.eventType == HyperlinkEvent.EventType.ACTIVATED) {
+                    val url = event.url?.toExternalForm() ?: event.description
+                    if (!url.isNullOrBlank()) BrowserUtil.browse(url)
+                }
+            }
+        }
+        // Trigger an initial layout at the target width, then pin the preferred size to the
+        // resulting height — without this, JEditorPane reports a 1-line preferred height and
+        // the popup ends up with a hairline body.
+        pane.setSize(targetWidth, Short.MAX_VALUE.toInt())
+        pane.preferredSize = Dimension(targetWidth, pane.preferredSize.height)
+        return pane
+    }
+
+    /**
+     * Background color for inline `<code>` and `<pre>` blocks. Slightly contrasting with the
+     * tooltip background (brighter on dark themes, darker on light) so monospace passages
+     * pop a bit without screaming for attention.
+     */
+    private fun codeBackgroundColor(): java.awt.Color {
+        val bg = UIUtil.getToolTipBackground()
+        return if (ColorUtil.isDark(bg)) ColorUtil.brighter(bg, 1) else ColorUtil.darker(bg, 1)
+    }
+
+    private fun colorToHex(c: java.awt.Color): String = "#%02x%02x%02x".format(c.red, c.green, c.blue)
 
     private fun addMouseListenerRecursively(c: Component, listener: MouseAdapter) {
         c.addMouseListener(listener)
@@ -1562,8 +1691,221 @@ class GenerateModelDialog(
         typeHintAlarm.cancelAllRequests()
     }
 
-    private fun formatTypeHintHtml(raw: String): String =
-        escapeHtml(raw).replace("\n\n", "</p><p>").replace("\n", "<br>").let { "<p>$it</p>" }
+    // -----------------------------------------------------------------------
+    // Markdown → HTML
+    //   Block-aware renderer: we first split the source into a sequence of MdBlocks
+    //   (paragraph / fenced code / unordered list / ordered list) so list items can be
+    //   wrapped in proper <ul>/<ol> instead of being rendered as default-dash lines.
+    //   Each block's inline content (bold / italic / inline code / links) is then run
+    //   through [renderInlineMarkdown] which handles the character-level grammar.
+    // -----------------------------------------------------------------------
+
+    private sealed interface MdBlock
+    private data class MdParagraph(val content: String) : MdBlock
+    private data class MdFencedCode(val body: String) : MdBlock
+    private data class MdUnorderedList(val items: List<String>) : MdBlock
+    private data class MdOrderedList(val items: List<String>) : MdBlock
+
+    // List-item recognisers. The leading whitespace match keeps minimally-indented bullets
+    // working, but we don't yet attempt to track nesting depth.
+    private val MD_UNORDERED_RE = Regex("^\\s*[-*+]\\s+(.+)$")
+    private val MD_ORDERED_RE = Regex("^\\s*\\d+[.)]\\s+(.+)$")
+
+    private fun renderTypeMarkdown(md: String): String {
+        val blocks = parseMarkdownBlocks(md)
+        val out = StringBuilder()
+        for (block in blocks) {
+            when (block) {
+                is MdParagraph -> {
+                    out.append("<p>").append(renderInlineMarkdown(block.content)).append("</p>")
+                }
+                is MdFencedCode -> {
+                    out.append("<pre><code>").append(escapeHtml(block.body.trimEnd())).append("</code></pre>")
+                }
+                is MdUnorderedList -> {
+                    out.append("<ul>")
+                    for (item in block.items) {
+                        out.append("<li>").append(renderInlineMarkdown(item)).append("</li>")
+                    }
+                    out.append("</ul>")
+                }
+                is MdOrderedList -> {
+                    out.append("<ol>")
+                    for (item in block.items) {
+                        out.append("<li>").append(renderInlineMarkdown(item)).append("</li>")
+                    }
+                    out.append("</ol>")
+                }
+            }
+        }
+        return out.toString()
+    }
+
+    /**
+     * Single-pass block classifier. Blank lines separate blocks; ``` ``` opens a fenced
+     * code block; a run of "- " / "* " / "+ " lines becomes a UL; a run of "N. " / "N) "
+     * lines becomes an OL; everything else is paragraph content (multiple non-blank lines
+     * collapse into one paragraph and get joined with `\n`, which the inline renderer
+     * later turns into `<br>`).
+     */
+    private fun parseMarkdownBlocks(md: String): List<MdBlock> {
+        val blocks = mutableListOf<MdBlock>()
+        val lines = md.lines()
+        var i = 0
+        while (i < lines.size) {
+            val line = lines[i]
+            when {
+                line.trim().isEmpty() -> i++
+                line.trimStart().startsWith("```") -> {
+                    var j = i + 1
+                    while (j < lines.size && !lines[j].trimStart().startsWith("```")) j++
+                    var body = lines.subList(i + 1, j).joinToString("\n")
+                    // Strip the optional leading language tag (e.g. opening line is just
+                    // "```python" / "```" — keep going if it's a bare fence).
+                    val firstLang = line.trimStart().removePrefix("```").trim()
+                    if (firstLang.isNotEmpty() && firstLang.all { it.isLetterOrDigit() }) {
+                        // language tag is on the opening fence itself; nothing to strip from body
+                    } else if (body.startsWith("python\n") || body.startsWith("sql\n") || body.startsWith("kotlin\n")) {
+                        body = body.substringAfter('\n')
+                    }
+                    blocks += MdFencedCode(body)
+                    i = if (j < lines.size) j + 1 else j
+                }
+                MD_UNORDERED_RE.matches(line) -> {
+                    val items = mutableListOf<String>()
+                    while (i < lines.size && MD_UNORDERED_RE.matches(lines[i])) {
+                        items += MD_UNORDERED_RE.matchEntire(lines[i])!!.groupValues[1]
+                        i++
+                    }
+                    blocks += MdUnorderedList(items)
+                }
+                MD_ORDERED_RE.matches(line) -> {
+                    val items = mutableListOf<String>()
+                    while (i < lines.size && MD_ORDERED_RE.matches(lines[i])) {
+                        items += MD_ORDERED_RE.matchEntire(lines[i])!!.groupValues[1]
+                        i++
+                    }
+                    blocks += MdOrderedList(items)
+                }
+                else -> {
+                    val paraLines = mutableListOf<String>()
+                    while (i < lines.size) {
+                        val l = lines[i]
+                        if (l.trim().isEmpty()) break
+                        if (l.trimStart().startsWith("```")) break
+                        if (MD_UNORDERED_RE.matches(l) || MD_ORDERED_RE.matches(l)) break
+                        paraLines += l
+                        i++
+                    }
+                    blocks += MdParagraph(paraLines.joinToString("\n"))
+                }
+            }
+        }
+        return blocks
+    }
+
+    /**
+     * Renders the inline grammar (code, bold, italic, links, soft `<br>` line breaks)
+     * inside one block. Recurses on bold/italic/link content so nested markup works
+     * (e.g. **`code` inside bold**).
+     */
+    private fun renderInlineMarkdown(md: String): String {
+        val out = StringBuilder()
+        var i = 0
+        val n = md.length
+        while (i < n) {
+            val c = md[i]
+            when {
+                // Inline code `…`
+                c == '`' -> {
+                    val end = md.indexOf('`', i + 1)
+                    if (end < 0) {
+                        out.append('`'); i++
+                    } else {
+                        out.append("<code>").append(escapeHtml(md.substring(i + 1, end))).append("</code>")
+                        i = end + 1
+                    }
+                }
+                // Bold **…**
+                c == '*' && i + 1 < n && md[i + 1] == '*' -> {
+                    val end = md.indexOf("**", i + 2)
+                    if (end < 0) {
+                        out.append("**"); i += 2
+                    } else {
+                        out.append("<b>").append(renderInlineMarkdown(md.substring(i + 2, end))).append("</b>")
+                        i = end + 2
+                    }
+                }
+                // Italic *…* or _…_
+                c == '*' || c == '_' -> {
+                    val end = md.indexOf(c, i + 1)
+                    if (end < 0) {
+                        out.append(escapeChar(c)); i++
+                    } else {
+                        out.append("<i>").append(renderInlineMarkdown(md.substring(i + 1, end))).append("</i>")
+                        i = end + 1
+                    }
+                }
+                // [text](target)
+                c == '[' -> {
+                    val rbracket = md.indexOf(']', i + 1)
+                    val openParen = if (rbracket > 0 && rbracket + 1 < n && md[rbracket + 1] == '(') rbracket + 1 else -1
+                    val closeParen = if (openParen > 0) md.indexOf(')', openParen + 1) else -1
+                    if (rbracket > 0 && openParen > 0 && closeParen > 0) {
+                        val text = md.substring(i + 1, rbracket)
+                        val target = md.substring(openParen + 1, closeParen)
+                        val url = resolveMarkdownLink(target)
+                        if (url != null) {
+                            out.append("<a href=\"").append(escapeAttr(url)).append("\">")
+                            out.append(renderInlineMarkdown(text))
+                            out.append("</a>")
+                        } else {
+                            out.append(renderInlineMarkdown(text))
+                        }
+                        i = closeParen + 1
+                    } else {
+                        out.append('['); i++
+                    }
+                }
+                // Soft line break within a paragraph
+                c == '\n' -> {
+                    out.append("<br>"); i++
+                }
+                else -> {
+                    out.append(escapeChar(c)); i++
+                }
+            }
+        }
+        return out.toString()
+    }
+
+    /**
+     * Resolves a markdown link target:
+     *   - absolute URL (`https://...`)            → returned as-is
+     *   - internal `#id`                           → docsUrlFor(def.dialect) + "#" + def.docs.cls
+     *   - internal `#id.suffix`                    → ... + ".suffix"
+     *   - unknown id, or dialect with no docs URL  → null (caller renders text without a link)
+     */
+    private fun resolveMarkdownLink(target: String): String? {
+        if (!target.startsWith("#")) return target
+        val ref = target.substring(1)
+        val dot = ref.indexOf('.')
+        val id = if (dot < 0) ref else ref.substring(0, dot)
+        val suffix = if (dot < 0) "" else ref.substring(dot)
+        val def = ColumnTypes.REGISTRY.findById(id) ?: return null
+        val root = ColumnTypes.docsUrlFor(def.dialect) ?: return null
+        return "$root#${def.docs.cls}$suffix"
+    }
+
+    private fun escapeChar(c: Char): String = when (c) {
+        '<' -> "&lt;"
+        '>' -> "&gt;"
+        '&' -> "&amp;"
+        else -> c.toString()
+    }
+
+    private fun escapeAttr(s: String): String =
+        s.replace("&", "&amp;").replace("\"", "&quot;")
 
     private fun escapeHtml(s: String): String =
         s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")

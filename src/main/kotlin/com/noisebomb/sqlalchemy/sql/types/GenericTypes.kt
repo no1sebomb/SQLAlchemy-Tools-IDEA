@@ -16,6 +16,8 @@ object GenericColumnTypes {
     // https://docs.sqlalchemy.org/en/21/core/type_basics.html#generic-camelcase-types
     val DOCS_URL = "https://docs.sqlalchemy.org/en/21/core/type_basics.html"
 
+    // TODO: Fix breaks in docs.text
+
     // https://docs.sqlalchemy.org/en/21/core/type_basics.html#sqlalchemy.types.BigInteger
     val BIGINTEGER = ColumnTypeDefinition(
         id = "biginteger",
