@@ -99,7 +99,6 @@ import java.awt.Font
 import java.awt.Graphics
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
-import java.awt.GridLayout
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
 import java.awt.event.ComponentAdapter
@@ -248,10 +247,11 @@ class GenerateModelDialog(
     private val typeHintAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, disposable)
     // Container that holds the type-specific parameter inputs; rebuilt whenever the user picks
     // a different type. Empty (and zero-height) for types with no parameters.
-    private val parametersPanel = JPanel().apply {
-        layout = BoxLayout(this, BoxLayout.Y_AXIS)
-        isOpaque = false
-    }
+    //
+    // GridBagLayout (rather than the more common BoxLayout) so each child can declare
+    // `fill = HORIZONTAL` + `weightx = 1` — that's what makes the bottom separator wrapper
+    // actually span the full column-card width instead of collapsing to its preferred width.
+    private val parametersPanel = JPanel(GridBagLayout()).apply { isOpaque = false }
     private val primaryKeyCheckbox = JBCheckBox("Primary key")
     private val uniqueCheckbox = JBCheckBox("Unique")
     private val nullableCheckbox = JBCheckBox("Nullable")
@@ -299,11 +299,12 @@ class GenerateModelDialog(
     private var sqlContentPanel: JComponent? = null
     private val sqlDialectCombo = newDialectCombo()
     /**
-     * Mirror of [sqlDialectCombo] shown on the column-options card so Manual-mode users (who
-     * never see the SQL header) can still set the dialect. Both combos bind to [dialectProperty]
-     * and stay synced via [bindDialectCombo].
+     * Sibling combo on the Table card. Both write to [dialectProperty] (see [bindDialectCombo]).
+     * In SQL / Data Source modes the dialect is supplied by those modes (the SQL header combo /
+     * the data source), so this combo is shown disabled — it still reflects the active dialect
+     * but the user can't override it from here.
      */
-    private val columnDialectCombo = newDialectCombo()
+    private val tableDialectCombo = newDialectCombo()
 
     // ---- Data Source mode ----
     private val dataSourceCombo = ComboBox(arrayOf("(no connected data sources)"))
@@ -472,6 +473,10 @@ class GenerateModelDialog(
 
     private fun onModeChanged(mode: EditMode) {
         applyModeLayout(mode)
+        // SQL / Data Source modes own the dialect (SQL header combo / connected data source).
+        // The Table-card combo still mirrors the active dialect, but the user can't change it
+        // from there in those modes.
+        tableDialectCombo.isEnabled = (mode == EditMode.MANUAL)
         if (mode == EditMode.SQL) parseSqlAndPopulate()
         updatePreview()
     }
@@ -583,10 +588,19 @@ class GenerateModelDialog(
             isOpaque = false
             add(cardIconLabel)
         }
+        // Always-visible "Dialect: <combo>" anchor on the right edge of the options panel header.
+        // Sits opposite the (sometimes-hidden) rounded header card so the dropdown is reachable
+        // regardless of which tree node is selected.
+        val dialectAnchor = JPanel(FlowLayout(FlowLayout.RIGHT, JBUIScale.scale(6), 0)).apply {
+            isOpaque = false
+            add(JBLabel("Dialect:"))
+            add(tableDialectCombo)
+        }
         val headerWrap = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.emptyBottom(8)
             add(headerCard, BorderLayout.WEST)
+            add(dialectAnchor, BorderLayout.EAST)
         }
         optionsHeaderCard = headerCard
 
@@ -641,9 +655,12 @@ class GenerateModelDialog(
             preferredSize = Dimension(0, JBUIScale.scale(64))
         }
         // Populate from the current dialect (in case it was set before the card was built),
-        // then enable substring search.
+        // then enable substring search. The default installOn() matches against Object.toString()
+        // which, for a ColumnTypeDefinition data class, expands to the full debug string — search
+        // never lined up with the visible item label. Provide an explicit extractor so the user's
+        // keystrokes match the displayed name (e.g. "Num" → Numeric).
         refreshTypeComboItems()
-        ComboboxSpeedSearch.installOn(typeCombo)
+        ComboboxSpeedSearch.installSpeedSearch<ColumnTypeDefinition>(typeCombo) { it?.name ?: "" }
 
         val form = panel {
             row("Name:") {
@@ -655,16 +672,13 @@ class GenerateModelDialog(
                     cell(columnNameField).resizableColumn().align(AlignX.FILL)
                 }
             }
-            row("Dialect:") {
-                cell(columnDialectCombo).align(AlignX.FILL)
-            }
             row("Type:") {
                 cell(typeCombo).resizableColumn().align(AlignX.FILL)
                 cell(typeHintIcon)
             }
             row {
                 cell(parametersPanel).resizableColumn().align(AlignX.FILL)
-            }.topGap(TopGap.SMALL)
+            }
             row {
                 cell(primaryKeyCheckbox)
                 cell(uniqueCheckbox)
@@ -1335,7 +1349,7 @@ class GenerateModelDialog(
         // Dialect property is the single source of truth — combos write to it, and an
         // afterChange listener performs the side effects (re-parse SQL, refresh the type combo).
         bindDialectCombo(sqlDialectCombo)
-        bindDialectCombo(columnDialectCombo)
+        bindDialectCombo(tableDialectCombo)
         dialectProperty.afterChange(disposable) {
             refreshTypeComboItems()
             parseSqlAndPopulate()
@@ -1582,30 +1596,58 @@ class GenerateModelDialog(
         // e.g. user just changed the type), build a fresh instance from defaults.
         val instance = spec?.typeInstance?.takeIf { it.definitionId == def.id } ?: def.newInstance()
 
-        // Two-column grid of parameter cells. Ordering: positional first (constructor args the
-        // user almost always sets, e.g. precision/scale/length); then other non-boolean kwargs;
-        // booleans last because they're typically tweak flags.
+        // Ordering: positional first (precision/scale/length the user almost always sets); other
+        // non-boolean kwargs next; booleans last (tweak flags).
         val ordered = orderedParameters(def.parameters)
-        val grid = JPanel(GridLayout(0, 2, JBUIScale.scale(16), JBUIScale.scale(4))).apply {
-            isOpaque = false
-            border = JBUI.Borders.empty(4, 0)
-        }
-        for (param in ordered) {
-            grid.add(buildParameterCell(param, instance))
-        }
 
-        // Wrap in a collapsible "Options" group via HideableDecorator. Per-instance state lives
-        // on `parametersGroupExpanded` so collapsing one column's options doesn't reopen them
-        // when the user re-selects the column.
+        val grid = buildParameterGrid(ordered, instance)
+
+        // Wrap in a collapsible "Options" group via HideableDecorator. Persisted expanded state
+        // lives on [parametersGroupExpanded] so toggling carries across column selections.
         val groupHolder = JPanel(BorderLayout()).apply { isOpaque = false }
+        // Bottom separator: thin divider between the parameter grid and the column checkboxes/
+        // Default/Description rows below. Only visible when the Options group is open.
+        //
+        // JSeparator alone caps its own preferred *width* (and BoxLayout-based parents respect
+        // that), so we wrap it in a JPanel(BorderLayout) that carries the top/bottom padding and
+        // lets the `fill = HORIZONTAL` GridBag constraint stretch the wrapper edge-to-edge.
+        val bottomSeparator = JSeparator(SwingConstants.HORIZONTAL)
+        val bottomSeparatorWrap = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            // Top inset = breathing room between the last parameter row and the rule.
+            // Bottom inset = breathing room between the rule and the Primary key / Default /
+            // Description rows that follow in the column card.
+            border = JBUI.Borders.empty(12, 0, 12, 0)
+            add(bottomSeparator, BorderLayout.CENTER)
+            isVisible = parametersGroupExpanded
+        }
         val hideable = object : HideableDecorator(groupHolder, "Options", false) {
-            override fun on() { super.on(); parametersGroupExpanded = true }
-            override fun off() { super.off(); parametersGroupExpanded = false }
+            override fun on() {
+                super.on()
+                parametersGroupExpanded = true
+                bottomSeparatorWrap.isVisible = true
+            }
+            override fun off() {
+                super.off()
+                parametersGroupExpanded = false
+                bottomSeparatorWrap.isVisible = false
+            }
         }
         hideable.setContentComponent(grid)
         hideable.setOn(parametersGroupExpanded)
 
-        parametersPanel.add(groupHolder)
+        val gbc = GridBagConstraints().apply {
+            gridx = 0
+            weightx = 1.0
+            fill = GridBagConstraints.HORIZONTAL
+            anchor = GridBagConstraints.NORTHWEST
+        }
+        parametersPanel.add(groupHolder, gbc.apply { gridy = 0 })
+        parametersPanel.add(bottomSeparatorWrap, GridBagConstraints().apply {
+            gridx = 0; gridy = 1; weightx = 1.0
+            fill = GridBagConstraints.HORIZONTAL
+            anchor = GridBagConstraints.NORTHWEST
+        })
         parametersPanel.revalidate()
         parametersPanel.repaint()
     }
@@ -1618,13 +1660,85 @@ class GenerateModelDialog(
         return positional + nonBoolKwargs + booleanKwargs
     }
 
-    /** One grid cell for [param] with the editor sized appropriately for its kind. */
-    private fun buildParameterCell(param: TypeParameter, instance: TypeInstance): JComponent {
+    /**
+     * Builds a two-pair-per-row [GridBagLayout] grid:
+     *
+     *   col 0       col 1       col 2       col 3   col 4
+     *   ┌────────┐ ┌─────────┐ ┌────────┐ ┌──────┐ ┌──────┐
+     *   │ Label: │ │ [input] │ │ Label: │ │ [in] │ │ glue │
+     *   └────────┘ └─────────┘ └────────┘ └──────┘ └──────┘
+     *
+     * GridBagLayout sizes each column to its widest cell, so labels line up vertically within
+     * col 0 (and col 2) regardless of length. Booleans don't need a separate label cell, so a
+     * boolean param occupies its slot with `gridwidth = 2`.
+     *
+     * The trailing weightx=1 filler column absorbs excess width, keeping inputs at their
+     * preferred (narrow) size on the left.
+     */
+    private fun buildParameterGrid(ordered: List<TypeParameter>, instance: TypeInstance): JPanel {
+        val grid = JPanel(GridBagLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(4, 0)
+        }
+        val rowGapY = JBUIScale.scale(4)
+        for ((rowIdx, pair) in ordered.chunked(2).withIndex()) {
+            placeParameterSlot(grid, pair[0], instance, rowIdx, slot = 0, topInset = rowGapY)
+            pair.getOrNull(1)?.let {
+                placeParameterSlot(grid, it, instance, rowIdx, slot = 1, topInset = rowGapY)
+            }
+            // Trailing glue column on every row so the editors don't get stretched by the
+            // available horizontal space.
+            grid.add(JPanel().apply { isOpaque = false }, GridBagConstraints().apply {
+                gridx = 4; gridy = rowIdx; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL
+            })
+        }
+        return grid
+    }
+
+    /**
+     * Places one parameter into the grid at the given row and slot (0 = left pair, 1 = right pair).
+     * Booleans take both cells (label + editor) with the checkbox carrying its own label.
+     */
+    private fun placeParameterSlot(
+        grid: JPanel,
+        param: TypeParameter,
+        instance: TypeInstance,
+        row: Int,
+        slot: Int,
+        topInset: Int,
+    ) {
+        val baseLabelCol = if (slot == 0) 0 else 2
+        val labelGutter = if (slot == 0) JBUIScale.scale(0) else JBUIScale.scale(20)
+        val editor = buildParameterEditor(param, instance)
+        val tooltip = param.description?.let { "<html><div style='width: 320px'>${escapeHtml(it)}</div></html>" }
+
+        if (param is BooleanParameter) {
+            grid.add(editor, GridBagConstraints().apply {
+                gridx = baseLabelCol; gridy = row
+                gridwidth = 2
+                anchor = GridBagConstraints.WEST
+                insets = JBUI.insets(topInset, labelGutter, 0, 0)
+            })
+        } else {
+            val label = JBLabel("${param.label}:").apply { toolTipText = tooltip }
+            grid.add(label, GridBagConstraints().apply {
+                gridx = baseLabelCol; gridy = row
+                anchor = GridBagConstraints.EAST
+                insets = JBUI.insets(topInset, labelGutter, 0, JBUIScale.scale(6))
+            })
+            grid.add(editor, GridBagConstraints().apply {
+                gridx = baseLabelCol + 1; gridy = row
+                anchor = GridBagConstraints.WEST
+                insets = JBUI.insets(topInset, 0, 0, 0)
+            })
+        }
+    }
+
+    /** Builds just the editor widget for [param], seeded from [instance]. No label wrapper. */
+    private fun buildParameterEditor(param: TypeParameter, instance: TypeInstance): JComponent {
         val tooltip = param.description?.let { "<html><div style='width: 320px'>${escapeHtml(it)}</div></html>" }
         return when (param) {
             is BooleanParameter -> {
-                // Checkboxes already carry their own label, so no separate JBLabel; flow it to
-                // the grid cell's left edge.
                 val checkbox = JBCheckBox(param.label, instance.bool(param.id) ?: param.defaultValue).apply {
                     toolTipText = tooltip
                 }
@@ -1632,11 +1746,11 @@ class GenerateModelDialog(
                     if (loading) return@addActionListener
                     writeParameterValue(param.id, checkbox.isSelected)
                 }
-                cellWrap(checkbox)
+                checkbox
             }
-            is IntParameter -> rowWithLabel(param.label, tooltip) {
+            is IntParameter -> {
                 // Narrow input — precision/scale/length are usually 1-3 digits.
-                val field = JBTextField(instance.int(param.id)?.toString() ?: "", 6).apply {
+                val field = JBTextField(instance.int(param.id)?.toString() ?: "", 5).apply {
                     toolTipText = tooltip
                 }
                 field.document.addDocumentListener(simpleListener {
@@ -1649,8 +1763,8 @@ class GenerateModelDialog(
                 })
                 field
             }
-            is StringParameter -> rowWithLabel(param.label, tooltip) {
-                val field = JBTextField(instance.string(param.id) ?: param.defaultValue.orEmpty(), 16).apply {
+            is StringParameter -> {
+                val field = JBTextField(instance.string(param.id) ?: param.defaultValue.orEmpty(), 14).apply {
                     toolTipText = tooltip
                 }
                 field.document.addDocumentListener(simpleListener {
@@ -1660,7 +1774,7 @@ class GenerateModelDialog(
                 })
                 field
             }
-            is EnumParameter -> rowWithLabel(param.label, tooltip) {
+            is EnumParameter -> {
                 val combo = ComboBox(param.values.toTypedArray()).apply {
                     selectedItem = instance.string(param.id) ?: param.defaultValue
                     toolTipText = tooltip
@@ -1672,30 +1786,12 @@ class GenerateModelDialog(
                 }
                 combo
             }
-            is TypeRefParameter -> rowWithLabel(param.label, tooltip) {
-                JBTextField("(nested type editing coming soon)", 22).apply {
-                    isEnabled = false
-                    toolTipText = tooltip
-                }
+            is TypeRefParameter -> JBTextField("(nested type editing coming soon)", 22).apply {
+                isEnabled = false
+                toolTipText = tooltip
             }
         }
     }
-
-    /**
-     * Cell layout: left-flush label + editor with their natural (preferred) widths — the GridLayout
-     * cell expands but the editor doesn't, so int/string inputs stay narrow.
-     */
-    private fun rowWithLabel(label: String, tooltip: String?, build: () -> JComponent): JComponent {
-        val labelComp = JBLabel("$label:").apply { this.toolTipText = tooltip }
-        return cellWrap(labelComp, build())
-    }
-
-    /** Wraps one or more widgets in a left-flow cell that keeps them at their preferred sizes. */
-    private fun cellWrap(vararg widgets: JComponent): JComponent =
-        JPanel(FlowLayout(FlowLayout.LEFT, JBUIScale.scale(6), 0)).apply {
-            isOpaque = false
-            widgets.forEach { add(it) }
-        }
 
     /** Updates the selected column's [TypeInstance.values] for one parameter. */
     private fun writeParameterValue(id: String, value: Any) {
