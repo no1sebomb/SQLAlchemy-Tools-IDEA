@@ -1,6 +1,11 @@
 package com.noisebomb.sqlalchemy.sql
 
-import com.noisebomb.sqlalchemy.model.SqlAlchemyColumnType
+import com.noisebomb.sqlalchemy.model.newInstance
+import com.noisebomb.sqlalchemy.sql.types.ColumnTypeDefinition
+import com.noisebomb.sqlalchemy.sql.types.ColumnTypes
+import com.noisebomb.sqlalchemy.sql.types.GenericColumnTypes
+import com.noisebomb.sqlalchemy.sql.types.IntParameter
+import com.noisebomb.sqlalchemy.sql.types.TypeInstance
 import net.sf.jsqlparser.JSQLParserException
 import net.sf.jsqlparser.parser.CCJSqlParserUtil
 import net.sf.jsqlparser.statement.create.table.CreateTable
@@ -9,7 +14,10 @@ import net.sf.jsqlparser.statement.create.table.Index
 /** A single column extracted from a CREATE TABLE statement. */
 data class ParsedColumn(
     val name: String,
-    val type: SqlAlchemyColumnType,
+    /** Resolved [ColumnTypeDefinition] — used for both the dialog UI and the legacy enum bridge. */
+    val definition: ColumnTypeDefinition,
+    /** Rich type instance with the parsed positional args populated (e.g. `VARCHAR(50)` -> length=50). */
+    val typeInstance: TypeInstance,
     val primaryKey: Boolean,
     val nullable: Boolean,
     val unique: Boolean,
@@ -140,9 +148,13 @@ object SqlDdlParser {
             if (key in uniqueColumns) unique = true
             if (primaryKey) nullable = false
 
+            val rawTypeName = def.colDataType?.dataType ?: ""
+            val typeArgs = def.colDataType?.argumentsStringList
+            val resolvedDef = resolveTypeDefinition(rawTypeName, typeArgs, dialect)
             ParsedColumn(
                 name = name,
-                type = mapType(def.colDataType?.dataType ?: "", def.colDataType?.argumentsStringList, dialect),
+                definition = resolvedDef,
+                typeInstance = buildTypeInstance(resolvedDef, typeArgs),
                 primaryKey = primaryKey,
                 nullable = nullable,
                 unique = unique,
@@ -160,32 +172,47 @@ object SqlDdlParser {
         emptyList()
     }
 
-    /** Maps a raw SQL type name to the closest [SqlAlchemyColumnType]. */
-    private fun mapType(rawType: String, args: List<String>?, dialect: SqlDialect): SqlAlchemyColumnType {
+    /**
+     * Resolves a raw SQL type name to a [ColumnTypeDefinition] via [ColumnTypes.REGISTRY], with a
+     * couple of dialect-specific quirks the alias model doesn't express well:
+     *  - MySQL / MariaDB `TINYINT(1)` is the conventional boolean,
+     *  - Oracle `NUMBER(1)` is the conventional boolean.
+     *
+     * Falls back to generic `String` when nothing matches, matching the previous parser's behavior.
+     */
+    private fun resolveTypeDefinition(
+        rawType: String,
+        args: List<String>?,
+        dialect: SqlDialect,
+    ): ColumnTypeDefinition {
         val t = rawType.uppercase().substringBefore('(').trim()
-        val singleArg = args?.singleOrNull()
-        return when {
-            // MySQL/MariaDB has no native boolean; TINYINT(1) is the BOOL/BOOLEAN convention.
-            t == "TINYINT" && singleArg == "1" && dialect in setOf(SqlDialect.MYSQL, SqlDialect.MARIADB) ->
-                SqlAlchemyColumnType.BOOLEAN
-            // Oracle has no native boolean; NUMBER(1) is the common flag convention.
-            t == "NUMBER" && singleArg == "1" && dialect == SqlDialect.ORACLE -> SqlAlchemyColumnType.BOOLEAN
-            t in setOf("BIGINT", "INT8", "BIGSERIAL", "SERIAL8") -> SqlAlchemyColumnType.BIG_INTEGER
-            t in setOf("INT", "INTEGER", "INT4", "INT2", "SERIAL", "SMALLSERIAL",
-                "SMALLINT", "TINYINT", "MEDIUMINT") -> SqlAlchemyColumnType.INTEGER
-            t == "BOOLEAN" || t == "BOOL" || t == "BIT" -> SqlAlchemyColumnType.BOOLEAN
-            t.contains("DOUBLE") || t in setOf("FLOAT", "REAL", "FLOAT4", "FLOAT8",
-                "BINARY_FLOAT", "BINARY_DOUBLE") -> SqlAlchemyColumnType.FLOAT
-            t in setOf("NUMERIC", "DECIMAL", "DEC", "NUMBER", "MONEY", "SMALLMONEY") -> SqlAlchemyColumnType.NUMERIC
-            t == "DATE" -> SqlAlchemyColumnType.DATE
-            t.contains("TIMESTAMP") || t in setOf("DATETIME", "DATETIME2", "SMALLDATETIME") -> SqlAlchemyColumnType.DATETIME
-            t.startsWith("TIME") -> SqlAlchemyColumnType.TIME
-            t.contains("JSON") -> SqlAlchemyColumnType.JSON
-            t == "UUID" || t == "UNIQUEIDENTIFIER" -> SqlAlchemyColumnType.UUID
-            t.contains("CHAR") || t in setOf("VARCHAR2", "NVARCHAR", "NCHAR", "STRING") -> SqlAlchemyColumnType.STRING
-            t.contains("TEXT") || t in setOf("CLOB", "NCLOB", "NTEXT") -> SqlAlchemyColumnType.TEXT
-            else -> SqlAlchemyColumnType.STRING
+        val singleArg = args?.singleOrNull()?.trim()
+        if (t == "TINYINT" && singleArg == "1" && dialect in setOf(SqlDialect.MYSQL, SqlDialect.MARIADB)) {
+            return GenericColumnTypes.BOOLEAN
         }
+        if (t == "NUMBER" && singleArg == "1" && dialect == SqlDialect.ORACLE) {
+            return GenericColumnTypes.BOOLEAN
+        }
+        return ColumnTypes.REGISTRY.findForSqlType(rawType, args.orEmpty(), dialect)
+            ?: GenericColumnTypes.STRING
+    }
+
+    /**
+     * Builds a [TypeInstance] from defaults, then fills positional [IntParameter]s in declared
+     * order from the parsed `(...)` args list. So `NUMERIC(10, 2)` populates `precision=10` and
+     * `scale=2`; `VARCHAR(50)` populates `length=50`; non-numeric args (e.g. ENUM literals) are
+     * ignored. Other parameter kinds (Boolean / String / Enum / TypeRef) stay at their defaults.
+     */
+    private fun buildTypeInstance(definition: ColumnTypeDefinition, args: List<String>?): TypeInstance {
+        val instance = definition.newInstance()
+        if (args.isNullOrEmpty()) return instance
+        val values = instance.values.toMutableMap()
+        val positionalInts = definition.parameters.filterIsInstance<IntParameter>().filter { it.positional }
+        val parsedInts = args.mapNotNull { it.trim().toIntOrNull() }
+        for ((param, value) in positionalInts.zip(parsedInts)) {
+            values[param.id] = value
+        }
+        return instance.copy(values = values)
     }
 
     /**

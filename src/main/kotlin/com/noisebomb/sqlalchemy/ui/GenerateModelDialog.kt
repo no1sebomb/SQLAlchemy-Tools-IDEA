@@ -22,6 +22,7 @@ import com.intellij.openapi.fileTypes.FileType
 import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.fileTypes.FileTypes
 import com.intellij.openapi.fileTypes.LanguageFileType
+import com.intellij.ide.BrowserUtil
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.observable.properties.AtomicProperty
 import com.intellij.openapi.project.Project
@@ -29,6 +30,10 @@ import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.ComponentValidator
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.ValidationInfo
+import com.intellij.openapi.ui.popup.JBPopup
+import com.intellij.ui.HideableDecorator
+import com.intellij.ui.HyperlinkLabel
+import com.intellij.ui.awt.RelativePoint
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.text.StringUtil
@@ -65,10 +70,25 @@ import com.noisebomb.sqlalchemy.model.SqlAlchemyColumnSpec
 import com.noisebomb.sqlalchemy.model.SqlAlchemyColumnType
 import com.noisebomb.sqlalchemy.model.SqlAlchemyGenerationMode
 import com.noisebomb.sqlalchemy.model.SqlAlchemyModelSpec
+import com.noisebomb.sqlalchemy.model.legacyEnumFor
+import com.noisebomb.sqlalchemy.model.newInstance
 import com.noisebomb.sqlalchemy.sql.SqlDialect
 import com.noisebomb.sqlalchemy.sql.ParsedTable
 import com.noisebomb.sqlalchemy.sql.SqlDdlParser
 import com.noisebomb.sqlalchemy.sql.SqlParseResult
+import com.noisebomb.sqlalchemy.sql.types.BooleanParameter
+import com.noisebomb.sqlalchemy.sql.types.ColumnTypeDefinition
+import com.noisebomb.sqlalchemy.sql.types.ColumnTypes
+import com.noisebomb.sqlalchemy.sql.types.EnumParameter
+import com.noisebomb.sqlalchemy.sql.types.GenericColumnTypes
+import com.noisebomb.sqlalchemy.sql.types.IntParameter
+import com.noisebomb.sqlalchemy.sql.types.StringParameter
+import com.noisebomb.sqlalchemy.sql.types.TypeInstance
+import com.noisebomb.sqlalchemy.sql.types.TypeParameter
+import com.noisebomb.sqlalchemy.sql.types.TypeRefParameter
+import com.noisebomb.sqlalchemy.sql.types.bool
+import com.noisebomb.sqlalchemy.sql.types.int
+import com.noisebomb.sqlalchemy.sql.types.string
 import java.awt.BorderLayout
 import java.awt.CardLayout
 import java.awt.Component
@@ -79,6 +99,7 @@ import java.awt.Font
 import java.awt.Graphics
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
+import java.awt.GridLayout
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
 import java.awt.event.ComponentAdapter
@@ -163,6 +184,11 @@ class GenerateModelDialog(
     // ---- Mode selection ----
     private val modeProperty = AtomicProperty(EditMode.MANUAL)
 
+    // ---- Dialect selection ----
+    // Single source of truth for the active SQL dialect. Two combos bind to it (one in the SQL
+    // header, one on the column card so Manual mode users can see/change it too).
+    private val dialectProperty = AtomicProperty(SqlDialect.GENERIC)
+
     // ---- Tree ----
     private val rootNode = DefaultMutableTreeNode(TableData)
     private val columnsFolder = DefaultMutableTreeNode(FolderData(FolderKind.COLUMNS))
@@ -191,7 +217,41 @@ class GenerateModelDialog(
     private val attributeNameField = JBTextField()
     private val columnNameDiffersCheckBox = JBCheckBox("Different column name")
     private val columnNameField = JBTextField()
-    private val typeCombo = ComboBox(SqlAlchemyColumnType.entries.toTypedArray())
+    private val typeCombo = ComboBox<ColumnTypeDefinition>().apply {
+        renderer = SimpleListCellRenderer.create { label, value, _ ->
+            if (value == null) {
+                label.text = ""
+                label.icon = null
+                return@create
+            }
+            if (value.dialect == SqlDialect.GENERIC) {
+                label.text = value.name
+                label.icon = null
+            } else {
+                // Render as `Name <i>Dialect</i>` with the dialect icon trailing the label so the
+                // user can tell at a glance which entries are dialect-specific.
+                label.text = "<html>${value.name} <i style='color: #888'>${value.dialect.displayName}</i></html>"
+                label.icon = SqlAlchemyIcons.forDialect(value.dialect)
+                label.horizontalTextPosition = SwingConstants.LEFT
+                label.iconTextGap = JBUIScale.scale(6)
+            }
+        }
+    }
+    // Question-mark to the right of the type combo. Hovering pops a JBPopup containing the
+    // type description and a clickable docs link; the popup stays alive while the cursor moves
+    // into it, so the link is reachable.
+    private val typeHintIcon = JBLabel(AllIcons.General.ContextHelp).apply {
+        border = JBUI.Borders.emptyLeft(4)
+        isVisible = false
+    }
+    private var typeHintPopup: JBPopup? = null
+    private val typeHintAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, disposable)
+    // Container that holds the type-specific parameter inputs; rebuilt whenever the user picks
+    // a different type. Empty (and zero-height) for types with no parameters.
+    private val parametersPanel = JPanel().apply {
+        layout = BoxLayout(this, BoxLayout.Y_AXIS)
+        isOpaque = false
+    }
     private val primaryKeyCheckbox = JBCheckBox("Primary key")
     private val uniqueCheckbox = JBCheckBox("Unique")
     private val nullableCheckbox = JBCheckBox("Nullable")
@@ -237,13 +297,13 @@ class GenerateModelDialog(
     private var sqlSplit: JSplitPane? = null
     private var sqlHeaderComponent: JComponent? = null
     private var sqlContentPanel: JComponent? = null
-    private val sqlDialectCombo = ComboBox(SqlDialect.entries.toTypedArray()).apply {
-        toolTipText = "SQL dialect"
-        renderer = SimpleListCellRenderer.create { label, value, _ ->
-            label.text = value.displayName
-            label.icon = SqlAlchemyIcons.forDialect(value)
-        }
-    }
+    private val sqlDialectCombo = newDialectCombo()
+    /**
+     * Mirror of [sqlDialectCombo] shown on the column-options card so Manual-mode users (who
+     * never see the SQL header) can still set the dialect. Both combos bind to [dialectProperty]
+     * and stay synced via [bindDialectCombo].
+     */
+    private val columnDialectCombo = newDialectCombo()
 
     // ---- Data Source mode ----
     private val dataSourceCombo = ComboBox(arrayOf("(no connected data sources)"))
@@ -291,6 +351,12 @@ class GenerateModelDialog(
     private var fileNameUserEdited = false
     private var loading = false
     private var syncing = false
+    // Set while a dialectProperty change is echoing back to a combo so the combo's resulting
+    // ActionListener doesn't re-fire the property and cause an infinite ping-pong.
+    private var syncingDialect = false
+    // Whether the column "Options" group is expanded. Persisted across column selections so a
+    // user who folds it once doesn't have to fold it again every time they switch column.
+    private var parametersGroupExpanded = true
     // The "Model name is required" error is only shown after the user has interacted.
     private var modelNameTouched = false
 
@@ -301,6 +367,7 @@ class GenerateModelDialog(
     init {
         title = "Create SQLAlchemy Model"
         setOKButtonText("Create")
+        installTypeHintHoverListeners()
         buildTreeContent()
         initListeners()
         applyMonospaceFont()
@@ -573,6 +640,9 @@ class GenerateModelDialog(
             minimumSize = Dimension(0, JBUIScale.scale(44))
             preferredSize = Dimension(0, JBUIScale.scale(64))
         }
+        // Populate from the current dialect (in case it was set before the card was built),
+        // then enable substring search.
+        refreshTypeComboItems()
         ComboboxSpeedSearch.installOn(typeCombo)
 
         val form = panel {
@@ -585,9 +655,16 @@ class GenerateModelDialog(
                     cell(columnNameField).resizableColumn().align(AlignX.FILL)
                 }
             }
+            row("Dialect:") {
+                cell(columnDialectCombo).align(AlignX.FILL)
+            }
             row("Type:") {
                 cell(typeCombo).resizableColumn().align(AlignX.FILL)
+                cell(typeHintIcon)
             }
+            row {
+                cell(parametersPanel).resizableColumn().align(AlignX.FILL)
+            }.topGap(TopGap.SMALL)
             row {
                 cell(primaryKeyCheckbox)
                 cell(uniqueCheckbox)
@@ -830,7 +907,8 @@ class GenerateModelDialog(
                 val differs = attr != col.name
                 val spec = SqlAlchemyColumnSpec(
                     name = attr,
-                    type = col.type,
+                    type = legacyEnumFor(col.definition.id),
+                    typeInstance = col.typeInstance,
                     primaryKey = col.primaryKey,
                     nullable = col.nullable,
                     unique = col.unique,
@@ -1042,7 +1120,15 @@ class GenerateModelDialog(
         rootNode.add(relationshipsFolder)
         columnsFolder.add(
             DefaultMutableTreeNode(
-                ColumnData(SqlAlchemyColumnSpec("id", SqlAlchemyColumnType.INTEGER, primaryKey = true, nullable = false))
+                ColumnData(
+                    SqlAlchemyColumnSpec(
+                        name = "id",
+                        type = legacyEnumFor(GenericColumnTypes.INTEGER.id),
+                        typeInstance = GenericColumnTypes.INTEGER.newInstance(),
+                        primaryKey = true,
+                        nullable = false,
+                    )
+                )
             )
         )
         treeModel.reload()
@@ -1054,7 +1140,12 @@ class GenerateModelDialog(
     }
 
     private fun addColumn() {
-        val spec = SqlAlchemyColumnSpec(name = nextColumnName("column"), type = SqlAlchemyColumnType.STRING, nullable = true)
+        val spec = SqlAlchemyColumnSpec(
+            name = nextColumnName("column"),
+            type = legacyEnumFor(GenericColumnTypes.STRING.id),
+            typeInstance = GenericColumnTypes.STRING.newInstance(),
+            nullable = true,
+        )
         val node = DefaultMutableTreeNode(ColumnData(spec))
         val selected = selectedColumnNode()
         val insertIndex = if (selected != null) columnsFolder.getIndex(selected) + 1 else columnsFolder.childCount
@@ -1201,7 +1292,17 @@ class GenerateModelDialog(
             if (columnNameDiffersCheckBox.isSelected) updateSelectedColumn { columnName = columnNameField.text.trim() }
         })
         typeCombo.addActionListener {
-            updateSelectedColumn { type = typeCombo.selectedItem as SqlAlchemyColumnType }
+            val def = typeCombo.selectedItem as? ColumnTypeDefinition ?: return@addActionListener
+            // Programmatic reloads (loadColumnCard, dialect refresh) run with `loading = true`
+            // and must not mutate the spec — they're echoing the spec back into the widgets.
+            if (!loading) {
+                updateSelectedColumn {
+                    typeInstance = def.newInstance()
+                    type = legacyEnumFor(def.id)
+                }
+            }
+            updateTypeHint(def)
+            rebuildParametersPanel(selectedColumnSpecOrNull())
             (tree.lastSelectedPathComponent as? DefaultMutableTreeNode)?.let { treeModel.nodeChanged(it) }
         }
         primaryKeyCheckbox.addActionListener {
@@ -1231,9 +1332,14 @@ class GenerateModelDialog(
                 if (modeProperty.get() == EditMode.SQL) scheduleSqlParse()
             }
         }, disposable)
-        // Dialect affects ambiguous type mappings (e.g. MySQL TINYINT(1) -> bool); re-parse the
-        // already-pasted DDL so the columns/preview reflect the newly selected dialect.
-        sqlDialectCombo.addActionListener { parseSqlAndPopulate() }
+        // Dialect property is the single source of truth — combos write to it, and an
+        // afterChange listener performs the side effects (re-parse SQL, refresh the type combo).
+        bindDialectCombo(sqlDialectCombo)
+        bindDialectCombo(columnDialectCombo)
+        dialectProperty.afterChange(disposable) {
+            refreshTypeComboItems()
+            parseSqlAndPopulate()
+        }
 
         updateTableNameFieldState()
         updateColumnNameFieldState()
@@ -1263,7 +1369,10 @@ class GenerateModelDialog(
             attributeNameField.text = spec.name
             columnNameDiffersCheckBox.isSelected = spec.columnNameDiffers
             columnNameField.text = spec.columnName
-            typeCombo.selectedItem = spec.type
+            val def = pickComboItem(spec.typeInstance.definitionId)
+            typeCombo.selectedItem = def
+            updateTypeHint(def)
+            rebuildParametersPanel(spec)
             primaryKeyCheckbox.isSelected = spec.primaryKey
             uniqueCheckbox.isSelected = spec.unique
             nullableCheckbox.isSelected = spec.nullable
@@ -1273,6 +1382,332 @@ class GenerateModelDialog(
             updateColumnNameFieldState()
         } finally {
             loading = false
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Column type combo / hint / parameter panel
+    // -----------------------------------------------------------------------
+
+    /** The currently-active dialect (read straight from [dialectProperty]). */
+    private fun activeDialect(): SqlDialect = dialectProperty.get()
+
+    /** Builds a styled dialect combo (used for both the SQL header and the column card). */
+    private fun newDialectCombo(): ComboBox<SqlDialect> = ComboBox(SqlDialect.entries.toTypedArray()).apply {
+        toolTipText = "SQL dialect"
+        renderer = SimpleListCellRenderer.create { label, value, _ ->
+            label.text = value.displayName
+            label.icon = SqlAlchemyIcons.forDialect(value)
+        }
+    }
+
+    /**
+     * Two-way binding between [combo] and [dialectProperty]: combo edits flow to the property,
+     * and property changes flow back to the combo. The [syncingDialect] guard breaks the cycle
+     * so we don't re-fire the action listener when the property update echoes back.
+     */
+    private fun bindDialectCombo(combo: ComboBox<SqlDialect>) {
+        combo.selectedItem = dialectProperty.get()
+        combo.addActionListener {
+            if (syncingDialect) return@addActionListener
+            val v = combo.selectedItem as? SqlDialect ?: return@addActionListener
+            dialectProperty.set(v)
+        }
+        dialectProperty.afterChange(disposable) { value ->
+            if (combo.selectedItem == value) return@afterChange
+            syncingDialect = true
+            try {
+                combo.selectedItem = value
+            } finally {
+                syncingDialect = false
+            }
+        }
+    }
+
+    /**
+     * Replaces the type combo items with those appropriate for the active dialect (dialect-specific
+     * types take precedence over the generics they supersede). Tries to keep the currently-selected
+     * type by id; if the previously-selected definition isn't available for the new dialect
+     * (e.g. user picked Integer in a future dialect-only registry), falls back to generic Integer.
+     */
+    private fun refreshTypeComboItems() {
+        val prevId = (typeCombo.selectedItem as? ColumnTypeDefinition)?.id
+        val items = ColumnTypes.REGISTRY.forDialect(activeDialect())
+        loading = true
+        try {
+            typeCombo.model = javax.swing.DefaultComboBoxModel(items.toTypedArray())
+            typeCombo.selectedItem = items.firstOrNull { it.id == prevId } ?: GenericColumnTypes.INTEGER
+        } finally {
+            loading = false
+        }
+        updateTypeHint(typeCombo.selectedItem as? ColumnTypeDefinition)
+    }
+
+    /** Looks up a definition by id within the current combo items, or falls back to Integer. */
+    private fun pickComboItem(definitionId: String): ColumnTypeDefinition {
+        for (i in 0 until typeCombo.itemCount) {
+            val item = typeCombo.getItemAt(i)
+            if (item.id == definitionId) return item
+        }
+        return GenericColumnTypes.INTEGER
+    }
+
+    /**
+     * Just toggles visibility — the popup contents are built on hover so they always reflect the
+     * currently-selected definition (no need to pre-cache anything here).
+     */
+    private fun updateTypeHint(def: ColumnTypeDefinition?) {
+        val hasContent = def != null && (!def.description.isNullOrBlank() || !def.docsUrl.isNullOrBlank())
+        typeHintIcon.isVisible = hasContent
+        if (!hasContent && typeHintPopup?.isVisible == true) {
+            typeHintAlarm.cancelAllRequests()
+            typeHintPopup?.cancel()
+            typeHintPopup = null
+        }
+    }
+
+    /**
+     * Hover-to-show / linger-to-dismiss pattern: 300ms hover delay before popping (so casual
+     * mouse-pass-through doesn't open it), 250ms grace period after exit so the user can travel
+     * from the question-mark icon onto the popup without it dismissing.
+     */
+    private fun installTypeHintHoverListeners() {
+        typeHintIcon.addMouseListener(object : MouseAdapter() {
+            override fun mouseEntered(e: MouseEvent) {
+                typeHintAlarm.cancelAllRequests()
+                typeHintAlarm.addRequest({ showTypeHintPopup() }, 300)
+            }
+            override fun mouseExited(e: MouseEvent) {
+                scheduleHideTypeHintPopup()
+            }
+        })
+    }
+
+    private fun showTypeHintPopup() {
+        val def = typeCombo.selectedItem as? ColumnTypeDefinition ?: return
+        if (def.description.isNullOrBlank() && def.docsUrl.isNullOrBlank()) return
+        if (typeHintPopup?.isVisible == true) return
+        val content = buildTypeHintContent(def)
+        val popup = JBPopupFactory.getInstance()
+            .createComponentPopupBuilder(content, null)
+            .setRequestFocus(false)
+            .setFocusable(false)
+            .setCancelOnClickOutside(true)
+            .setCancelOnOtherWindowOpen(true)
+            .setMovable(false)
+            .setResizable(false)
+            .createPopup()
+        typeHintPopup = popup
+        popup.show(RelativePoint.getSouthOf(typeHintIcon))
+    }
+
+    private fun buildTypeHintContent(def: ColumnTypeDefinition): JComponent {
+        val panel = JPanel(BorderLayout(0, JBUIScale.scale(8))).apply {
+            border = JBUI.Borders.empty(10, 14)
+            background = UIUtil.getToolTipBackground()
+            isOpaque = true
+        }
+        if (!def.description.isNullOrBlank()) {
+            // No fixed width / height — the label sizes to its content, but `max-width` keeps
+            // long paragraphs from stretching past a comfortable line length.
+            val desc = JBLabel(
+                "<html><div style='max-width: 460px;'>${formatTypeHintHtml(def.description)}</div></html>"
+            ).apply { verticalAlignment = SwingConstants.TOP }
+            panel.add(desc, BorderLayout.CENTER)
+        }
+        if (!def.docsUrl.isNullOrBlank()) {
+            val link = HyperlinkLabel("Open SQLAlchemy documentation").apply {
+                setHyperlinkTarget(def.docsUrl)
+            }
+            panel.add(link, BorderLayout.SOUTH)
+        }
+        // Mouse listener on the popup keeps it alive while the cursor is inside. Walk the
+        // children so hovering the link doesn't trigger a `panel` exit event.
+        val keepAliveListener = object : MouseAdapter() {
+            override fun mouseEntered(e: MouseEvent) = cancelHideTypeHintPopup()
+            override fun mouseExited(e: MouseEvent) = scheduleHideTypeHintPopup()
+        }
+        addMouseListenerRecursively(panel, keepAliveListener)
+        return panel
+    }
+
+    private fun addMouseListenerRecursively(c: Component, listener: MouseAdapter) {
+        c.addMouseListener(listener)
+        if (c is java.awt.Container) c.components.forEach { addMouseListenerRecursively(it, listener) }
+    }
+
+    private fun scheduleHideTypeHintPopup() {
+        typeHintAlarm.cancelAllRequests()
+        typeHintAlarm.addRequest({
+            typeHintPopup?.cancel()
+            typeHintPopup = null
+        }, 250)
+    }
+
+    private fun cancelHideTypeHintPopup() {
+        typeHintAlarm.cancelAllRequests()
+    }
+
+    private fun formatTypeHintHtml(raw: String): String =
+        escapeHtml(raw).replace("\n\n", "</p><p>").replace("\n", "<br>").let { "<p>$it</p>" }
+
+    private fun escapeHtml(s: String): String =
+        s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    /** Spec of the currently selected column node, if any (used by the parameter panel rebuild). */
+    private fun selectedColumnSpecOrNull(): SqlAlchemyColumnSpec? =
+        (selectedColumnNode()?.userObject as? ColumnData)?.spec
+
+    /**
+     * Wipes [parametersPanel] and re-renders one input per declared parameter on the active type.
+     *
+     * Each input is seeded from the spec's [TypeInstance.values] (falling back to the parameter
+     * default). User edits write back into the spec's TypeInstance immutably (we `copy()` rather
+     * than mutate so equality checks for snapshot/undo can compare instances).
+     *
+     * The whole panel is wrapped in a `loading = true` guard while we install widgets so the
+     * action listeners we attach don't fire spurious "user edited X" events during setup.
+     */
+    private fun rebuildParametersPanel(spec: SqlAlchemyColumnSpec?) {
+        parametersPanel.removeAll()
+        val def = typeCombo.selectedItem as? ColumnTypeDefinition
+        if (def == null || def.parameters.isEmpty()) {
+            parametersPanel.isVisible = false
+            parametersPanel.revalidate()
+            parametersPanel.repaint()
+            return
+        }
+        parametersPanel.isVisible = true
+        // Always work against the spec's *current* instance — if it's stale (different definition,
+        // e.g. user just changed the type), build a fresh instance from defaults.
+        val instance = spec?.typeInstance?.takeIf { it.definitionId == def.id } ?: def.newInstance()
+
+        // Two-column grid of parameter cells. Ordering: positional first (constructor args the
+        // user almost always sets, e.g. precision/scale/length); then other non-boolean kwargs;
+        // booleans last because they're typically tweak flags.
+        val ordered = orderedParameters(def.parameters)
+        val grid = JPanel(GridLayout(0, 2, JBUIScale.scale(16), JBUIScale.scale(4))).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(4, 0)
+        }
+        for (param in ordered) {
+            grid.add(buildParameterCell(param, instance))
+        }
+
+        // Wrap in a collapsible "Options" group via HideableDecorator. Per-instance state lives
+        // on `parametersGroupExpanded` so collapsing one column's options doesn't reopen them
+        // when the user re-selects the column.
+        val groupHolder = JPanel(BorderLayout()).apply { isOpaque = false }
+        val hideable = object : HideableDecorator(groupHolder, "Options", false) {
+            override fun on() { super.on(); parametersGroupExpanded = true }
+            override fun off() { super.off(); parametersGroupExpanded = false }
+        }
+        hideable.setContentComponent(grid)
+        hideable.setOn(parametersGroupExpanded)
+
+        parametersPanel.add(groupHolder)
+        parametersPanel.revalidate()
+        parametersPanel.repaint()
+    }
+
+    /** Returns [params] reordered as positional → non-bool kwargs → booleans. */
+    private fun orderedParameters(params: List<TypeParameter>): List<TypeParameter> {
+        val positional = params.filter { it.positional }
+        val nonBoolKwargs = params.filter { !it.positional && it !is BooleanParameter }
+        val booleanKwargs = params.filter { !it.positional && it is BooleanParameter }
+        return positional + nonBoolKwargs + booleanKwargs
+    }
+
+    /** One grid cell for [param] with the editor sized appropriately for its kind. */
+    private fun buildParameterCell(param: TypeParameter, instance: TypeInstance): JComponent {
+        val tooltip = param.description?.let { "<html><div style='width: 320px'>${escapeHtml(it)}</div></html>" }
+        return when (param) {
+            is BooleanParameter -> {
+                // Checkboxes already carry their own label, so no separate JBLabel; flow it to
+                // the grid cell's left edge.
+                val checkbox = JBCheckBox(param.label, instance.bool(param.id) ?: param.defaultValue).apply {
+                    toolTipText = tooltip
+                }
+                checkbox.addActionListener {
+                    if (loading) return@addActionListener
+                    writeParameterValue(param.id, checkbox.isSelected)
+                }
+                cellWrap(checkbox)
+            }
+            is IntParameter -> rowWithLabel(param.label, tooltip) {
+                // Narrow input — precision/scale/length are usually 1-3 digits.
+                val field = JBTextField(instance.int(param.id)?.toString() ?: "", 6).apply {
+                    toolTipText = tooltip
+                }
+                field.document.addDocumentListener(simpleListener {
+                    if (loading) return@simpleListener
+                    val text = field.text.trim()
+                    when {
+                        text.isEmpty() -> clearParameterValue(param.id)
+                        else -> text.toIntOrNull()?.let { writeParameterValue(param.id, it) }
+                    }
+                })
+                field
+            }
+            is StringParameter -> rowWithLabel(param.label, tooltip) {
+                val field = JBTextField(instance.string(param.id) ?: param.defaultValue.orEmpty(), 16).apply {
+                    toolTipText = tooltip
+                }
+                field.document.addDocumentListener(simpleListener {
+                    if (loading) return@simpleListener
+                    val text = field.text
+                    if (text.isEmpty()) clearParameterValue(param.id) else writeParameterValue(param.id, text)
+                })
+                field
+            }
+            is EnumParameter -> rowWithLabel(param.label, tooltip) {
+                val combo = ComboBox(param.values.toTypedArray()).apply {
+                    selectedItem = instance.string(param.id) ?: param.defaultValue
+                    toolTipText = tooltip
+                }
+                combo.addActionListener {
+                    if (loading) return@addActionListener
+                    val v = combo.selectedItem as? String ?: return@addActionListener
+                    writeParameterValue(param.id, v)
+                }
+                combo
+            }
+            is TypeRefParameter -> rowWithLabel(param.label, tooltip) {
+                JBTextField("(nested type editing coming soon)", 22).apply {
+                    isEnabled = false
+                    toolTipText = tooltip
+                }
+            }
+        }
+    }
+
+    /**
+     * Cell layout: left-flush label + editor with their natural (preferred) widths — the GridLayout
+     * cell expands but the editor doesn't, so int/string inputs stay narrow.
+     */
+    private fun rowWithLabel(label: String, tooltip: String?, build: () -> JComponent): JComponent {
+        val labelComp = JBLabel("$label:").apply { this.toolTipText = tooltip }
+        return cellWrap(labelComp, build())
+    }
+
+    /** Wraps one or more widgets in a left-flow cell that keeps them at their preferred sizes. */
+    private fun cellWrap(vararg widgets: JComponent): JComponent =
+        JPanel(FlowLayout(FlowLayout.LEFT, JBUIScale.scale(6), 0)).apply {
+            isOpaque = false
+            widgets.forEach { add(it) }
+        }
+
+    /** Updates the selected column's [TypeInstance.values] for one parameter. */
+    private fun writeParameterValue(id: String, value: Any) {
+        updateSelectedColumn {
+            typeInstance = typeInstance.copy(values = typeInstance.values + (id to value))
+        }
+    }
+
+    /** Removes a parameter value, reverting the row to "use SQLAlchemy default". */
+    private fun clearParameterValue(id: String) {
+        updateSelectedColumn {
+            typeInstance = typeInstance.copy(values = typeInstance.values - id)
         }
     }
 
