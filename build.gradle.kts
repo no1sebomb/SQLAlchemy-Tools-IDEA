@@ -71,3 +71,32 @@ dependencies {
         testFramework(TestFrameworkType.Platform)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tooling: dump the column-type registry to JSON for the docs scraper.
+//
+//   ./gradlew dumpTypeManifest   →  build/types-manifest.json
+//
+// The Python script under scripts/ reads this file and fetches the per-type docs HTML.
+// ---------------------------------------------------------------------------
+tasks.register<JavaExec>("dumpTypeManifest") {
+    group = "documentation"
+    description = "Dump the ColumnTypes registry as JSON for the docs-scraper Python script."
+    dependsOn("classes")
+    // gradle.properties sets kotlin.stdlib.default.dependency=false so the IDE bundle provides
+    // kotlin-stdlib at runtime in the plugin context. For a standalone JavaExec we have to add
+    // it back explicitly, otherwise the JVM fails to load NoWhenBranchMatchedException et al.
+    // Hardcoded to match `org.jetbrains.kotlin.jvm` plugin version pinned in settings.gradle.kts.
+    classpath = sourceSets["main"].runtimeClasspath +
+        configurations.detachedConfiguration(
+            dependencies.create("org.jetbrains.kotlin:kotlin-stdlib:2.2.20")
+        )
+    mainClass.set("com.noisebomb.sqlalchemy.tools.DumpTypeManifestKt")
+    val outputFile = layout.buildDirectory.file("types-manifest.json")
+    outputs.file(outputFile)
+    doFirst {
+        val f = outputFile.get().asFile
+        f.parentFile.mkdirs()
+        standardOutput = f.outputStream()
+    }
+}
