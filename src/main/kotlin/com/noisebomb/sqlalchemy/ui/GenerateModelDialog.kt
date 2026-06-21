@@ -18,10 +18,12 @@ import com.intellij.openapi.editor.markup.HighlighterLayer
 import com.intellij.openapi.editor.markup.HighlighterTargetArea
 import com.intellij.openapi.editor.markup.RangeHighlighter
 import com.intellij.openapi.editor.markup.TextAttributes
+import com.intellij.lang.Language
 import com.intellij.openapi.fileTypes.FileType
 import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.fileTypes.FileTypes
 import com.intellij.openapi.fileTypes.LanguageFileType
+import com.intellij.openapi.fileTypes.SyntaxHighlighterFactory
 import com.intellij.ide.BrowserUtil
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.observable.properties.AtomicProperty
@@ -1535,7 +1537,10 @@ class GenerateModelDialog(
         panel.add(buildTypeHintHeader(def), BorderLayout.NORTH)
 
         if (!def.docs.text.isNullOrBlank()) {
-            panel.add(buildTypeHintBody(def.docs.text), BorderLayout.CENTER)
+            val body = buildTypeHintBody(def.docs.text).apply {
+                border = JBUI.Borders.emptyLeft(14)
+            }
+            panel.add(body, BorderLayout.CENTER)
         }
 
         // Mouse listener on the popup keeps it alive while the cursor is inside. Walk the
@@ -1621,6 +1626,7 @@ class GenerateModelDialog(
      */
     private fun buildTypeHintBody(markdown: String): JComponent {
         val targetWidth = JBUIScale.scale(600)
+        val maxHeight = JBUIScale.scale(500)
         val codeBgHex = colorToHex(codeBackgroundColor())
         // The `<style>` block is read by HTMLEditorKit at parse time — keep it minimal.
         val html = """
@@ -1628,8 +1634,8 @@ class GenerateModelDialog(
             <head>
             <style>
             body { font-family: sans-serif; }
-            code { font-family: Monospaced; background-color: $codeBgHex; }
-            pre { font-family: Monospaced; background-color: $codeBgHex; }
+            code { font-family: Monospaced; background-color: $codeBgHex; padding: 2px 6px; }
+            pre { font-family: Monospaced; background-color: $codeBgHex; padding: 8px 12px; }
             ul { margin-left: 16px; }
             ol { margin-left: 18px; }
             li { margin-bottom: 2px; }
@@ -1654,12 +1660,30 @@ class GenerateModelDialog(
                 }
             }
         }
-        // Trigger an initial layout at the target width, then pin the preferred size to the
-        // resulting height — without this, JEditorPane reports a 1-line preferred height and
-        // the popup ends up with a hairline body.
+        // Pre-layout at the target width so wrapping happens before we measure: HTMLEditorKit
+        // wraps body text at the assigned width and reports the resulting natural size. Pre
+        // blocks that exceed [targetWidth] keep their full natural width so the horizontal
+        // scrollbar engages instead of clipping.
         pane.setSize(targetWidth, Short.MAX_VALUE.toInt())
-        pane.preferredSize = Dimension(targetWidth, pane.preferredSize.height)
-        return pane
+        val natural = pane.preferredSize
+        pane.preferredSize = Dimension(maxOf(targetWidth, natural.width), natural.height)
+
+        // Wrap in a JBScrollPane so a very long doc page or an extra-wide code example
+        // doesn't grow the popup unboundedly — the body caps at maxHeight × targetWidth
+        // and scrolls past that.
+        return JBScrollPane(pane).apply {
+            border = null
+            isOpaque = false
+            viewport.isOpaque = false
+            viewport.background = UIUtil.getToolTipBackground()
+            background = UIUtil.getToolTipBackground()
+            horizontalScrollBarPolicy = JBScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED
+            verticalScrollBarPolicy = JBScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED
+            preferredSize = Dimension(
+                targetWidth,
+                minOf(natural.height, maxHeight),
+            )
+        }
     }
 
     /**
@@ -1702,7 +1726,7 @@ class GenerateModelDialog(
 
     private sealed interface MdBlock
     private data class MdParagraph(val content: String) : MdBlock
-    private data class MdFencedCode(val body: String) : MdBlock
+    private data class MdFencedCode(val language: String?, val body: String) : MdBlock
     private data class MdUnorderedList(val items: List<String>) : MdBlock
     private data class MdOrderedList(val items: List<String>) : MdBlock
 
@@ -1720,7 +1744,7 @@ class GenerateModelDialog(
                     out.append("<p>").append(renderInlineMarkdown(block.content)).append("</p>")
                 }
                 is MdFencedCode -> {
-                    out.append("<pre><code>").append(escapeHtml(block.body.trimEnd())).append("</code></pre>")
+                    out.append("<pre>").append(highlightCodeBlock(block.body.trimEnd(), block.language)).append("</pre>")
                 }
                 is MdUnorderedList -> {
                     out.append("<ul>")
@@ -1757,18 +1781,12 @@ class GenerateModelDialog(
             when {
                 line.trim().isEmpty() -> i++
                 line.trimStart().startsWith("```") -> {
+                    // The opening fence carries the optional language tag (`` `python ``).
+                    val language = line.trimStart().removePrefix("```").trim().takeIf { it.isNotBlank() }
                     var j = i + 1
                     while (j < lines.size && !lines[j].trimStart().startsWith("```")) j++
-                    var body = lines.subList(i + 1, j).joinToString("\n")
-                    // Strip the optional leading language tag (e.g. opening line is just
-                    // "```python" / "```" — keep going if it's a bare fence).
-                    val firstLang = line.trimStart().removePrefix("```").trim()
-                    if (firstLang.isNotEmpty() && firstLang.all { it.isLetterOrDigit() }) {
-                        // language tag is on the opening fence itself; nothing to strip from body
-                    } else if (body.startsWith("python\n") || body.startsWith("sql\n") || body.startsWith("kotlin\n")) {
-                        body = body.substringAfter('\n')
-                    }
-                    blocks += MdFencedCode(body)
+                    val body = lines.subList(i + 1, j).joinToString("\n")
+                    blocks += MdFencedCode(language, body)
                     i = if (j < lines.size) j + 1 else j
                 }
                 MD_UNORDERED_RE.matches(line) -> {
@@ -1895,6 +1913,62 @@ class GenerateModelDialog(
         val def = ColumnTypes.REGISTRY.findById(id) ?: return null
         val root = ColumnTypes.docsUrlFor(def.dialect) ?: return null
         return "$root#${def.docs.cls}$suffix"
+    }
+
+    /**
+     * Tokenises [code] using IntelliJ's [SyntaxHighlighterFactory] for [language] and emits
+     * an HTML fragment with per-token `<span style='color: #…'>` colors drawn from the active
+     * editor color scheme — the same colors the user sees in the editor.
+     *
+     * The supported language ids are the IntelliJ Platform ones; we accept short aliases
+     * (`py`, `kt`) too. If the language isn't registered in this IDE (e.g. Python plugin
+     * absent), or if the lexer throws for any reason, we fall back to HTML-escaped plain
+     * text — the popup degrades gracefully instead of crashing the hover.
+     */
+    private fun highlightCodeBlock(code: String, language: String?): String {
+        if (language.isNullOrBlank()) return escapeHtml(code)
+        val langId = canonicalLanguageId(language) ?: return escapeHtml(code)
+        val lang = Language.findLanguageByID(langId) ?: return escapeHtml(code)
+        return try {
+            val highlighter = SyntaxHighlighterFactory.getSyntaxHighlighter(lang, project, null)
+                ?: return escapeHtml(code)
+            val lexer = highlighter.highlightingLexer
+            lexer.start(code)
+            val scheme = EditorColorsManager.getInstance().globalScheme
+            val sb = StringBuilder()
+            while (lexer.tokenType != null) {
+                val tokenText = code.substring(lexer.tokenStart, lexer.tokenEnd)
+                // Walk the priority list of TextAttributesKey for this token type; first one
+                // with a foreground color wins. Token types like WHITE_SPACE return an empty
+                // key list and we just emit the raw text.
+                val color = highlighter.getTokenHighlights(lexer.tokenType!!).asSequence()
+                    .mapNotNull { scheme.getAttributes(it)?.foregroundColor }
+                    .firstOrNull()
+                if (color != null) {
+                    sb.append("<span style='color: ").append(colorToHex(color)).append("'>")
+                    sb.append(escapeHtml(tokenText))
+                    sb.append("</span>")
+                } else {
+                    sb.append(escapeHtml(tokenText))
+                }
+                lexer.advance()
+            }
+            sb.toString()
+        } catch (e: Throwable) {
+            escapeHtml(code)
+        }
+    }
+
+    /** Maps a markdown fence language tag to a Platform [Language] id. */
+    private fun canonicalLanguageId(raw: String): String? = when (raw.lowercase().trim()) {
+        "python", "py" -> "Python"
+        "sql" -> "SQL"
+        "kotlin", "kt" -> "kotlin"
+        "java" -> "JAVA"
+        "json" -> "JSON"
+        "xml" -> "XML"
+        "yaml", "yml" -> "yaml"
+        else -> null
     }
 
     private fun escapeChar(c: Char): String = when (c) {
