@@ -59,6 +59,10 @@ fun main() {
             linkedMapOf<String, Any?>(
                 "id" to dialect.name,
                 "docsUrl" to ColumnTypes.docsUrlFor(dialect).orEmpty(),
+                // Per-dialect Python module — each type's SQLAlchemy import is now derived as
+                // `from $sqlalchemyModule import $sqlalchemyTypeName` instead of being repeated
+                // on every ColumnTypeDefinition.
+                "sqlalchemyModule" to dialect.sqlalchemyModule,
                 "types" to byDialect.getValue(dialect).map(::serializeType),
             )
         },

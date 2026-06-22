@@ -186,7 +186,6 @@ data class ColumnTypeDefinition(
     val parameters: List<TypeParameter> = emptyList(),
 
     val sqlalchemyTypeName: String,
-    val sqlalchemyImports: List<ImportDefinition>,
 
     val annotation: AnnotationResolver,
 
@@ -207,3 +206,13 @@ fun ColumnTypeDefinition.resolveAnnotation(
     instance: TypeInstance,
     registry: ColumnTypeRegistry,
 ): AnnotationSpec = annotation.resolve(instance, registry)
+
+/**
+ * Derived SQLAlchemy import for this type: `from <dialect.sqlalchemyModule> import <sqlalchemyTypeName>`.
+ *
+ * Previously every [ColumnTypeDefinition] had to spell its `sqlalchemyImports = listOf(...)`
+ * out by hand; now the module comes from [SqlDialect.sqlalchemyModule] and the symbol from
+ * [ColumnTypeDefinition.sqlalchemyTypeName] — the codegen / scraper just concatenates them.
+ */
+fun ColumnTypeDefinition.sqlalchemyImport(): ImportDefinition =
+    ImportDefinition(module = dialect.sqlalchemyModule, name = sqlalchemyTypeName)

@@ -22,9 +22,6 @@ object PostgresqlColumnTypes {
         parameters = ARRAY_LIKE_PARAMS,
 
         sqlalchemyTypeName = "ARRAY",
-        sqlalchemyImports = listOf(
-            ImportDefinition("sqlalchemy.dialects.postgresql", "ARRAY"),
-        ),
 
         annotation = ARRAY_ANNOTATION,
 
@@ -72,9 +69,6 @@ object PostgresqlColumnTypes {
         name = "BIT",
 
         sqlalchemyTypeName = "BIT",
-        sqlalchemyImports = listOf(
-            ImportDefinition("sqlalchemy.dialects.postgresql", "BIT"),
-        ),
 
         annotation = STR_ANNOTATION,
 
@@ -103,9 +97,6 @@ object PostgresqlColumnTypes {
         ),
 
         sqlalchemyTypeName = "JSONB",
-        sqlalchemyImports = listOf(
-            ImportDefinition("sqlalchemy.dialects.postgresql", "JSONB"),
-        ),
 
         annotation = DICT_ANNOTATION,
 

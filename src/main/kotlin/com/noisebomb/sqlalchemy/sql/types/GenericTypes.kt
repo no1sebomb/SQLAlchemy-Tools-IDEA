@@ -24,9 +24,6 @@ object GenericColumnTypes {
         name = "BigInteger",
 
         sqlalchemyTypeName = "BigInteger",
-        sqlalchemyImports = listOf(
-            ImportDefinition("sqlalchemy.types", "BigInteger"),
-        ),
 
         annotation = INT_ANNOTATION,
 
@@ -53,9 +50,6 @@ object GenericColumnTypes {
         name = "Boolean",
 
         sqlalchemyTypeName = "Boolean",
-        sqlalchemyImports = listOf(
-            ImportDefinition("sqlalchemy.types", "Boolean"),
-        ),
 
         annotation = BOOL_ANNOTATION,
 
@@ -85,9 +79,6 @@ object GenericColumnTypes {
         name = "Date",
 
         sqlalchemyTypeName = "Date",
-        sqlalchemyImports = listOf(
-            ImportDefinition("sqlalchemy.types", "Date"),
-        ),
 
         annotation = DATE_ANNOTATION,
 
@@ -112,9 +103,6 @@ object GenericColumnTypes {
         ),
 
         sqlalchemyTypeName = "DateTime",
-        sqlalchemyImports = listOf(
-            ImportDefinition("sqlalchemy.types", "DateTime"),
-        ),
 
         annotation = DATETIME_ANNOTATION,
         sqlAliases = listOf(
@@ -151,9 +139,6 @@ object GenericColumnTypes {
         ),
 
         sqlalchemyTypeName = "Double",
-        sqlalchemyImports = listOf(
-            ImportDefinition("sqlalchemy.types", "Double"),
-        ),
 
         annotation = DECIMAL_OR_FLOAT_ANNOTATION,
 
@@ -185,9 +170,6 @@ object GenericColumnTypes {
         ),
 
         sqlalchemyTypeName = "Float",
-        sqlalchemyImports = listOf(
-            ImportDefinition("sqlalchemy.types", "Float"),
-        ),
 
         annotation = DECIMAL_OR_FLOAT_ANNOTATION,
 
@@ -220,9 +202,6 @@ object GenericColumnTypes {
         name = "Integer",
 
         sqlalchemyTypeName = "Integer",
-        sqlalchemyImports = listOf(
-            ImportDefinition("sqlalchemy.types", "Integer"),
-        ),
 
         annotation = INT_ANNOTATION,
 
@@ -276,9 +255,6 @@ object GenericColumnTypes {
         ),
 
         sqlalchemyTypeName = "Interval",
-        sqlalchemyImports = listOf(
-            ImportDefinition("sqlalchemy.types", "Interval"),
-        ),
 
         annotation = TIMEDELTA_ANNOTATION,
 
@@ -319,9 +295,6 @@ object GenericColumnTypes {
         ),
 
         sqlalchemyTypeName = "LargeBinary",
-        sqlalchemyImports = listOf(
-            ImportDefinition("sqlalchemy.types", "LargeBinary"),
-        ),
 
         annotation = BYTES_ANNOTATION,
 
@@ -355,9 +328,6 @@ object GenericColumnTypes {
         ),
 
         sqlalchemyTypeName = "Numeric",
-        sqlalchemyImports = listOf(
-            ImportDefinition("sqlalchemy.types", "Numeric"),
-        ),
 
         annotation = DECIMAL_OR_FLOAT_ANNOTATION,
 
@@ -394,9 +364,6 @@ object GenericColumnTypes {
         // callables and class references, which the param model can't usefully express today.
 
         sqlalchemyTypeName = "PickleType",
-        sqlalchemyImports = listOf(
-            ImportDefinition("sqlalchemy.types", "PickleType"),
-        ),
 
         annotation = AnnotationResolver { _, _ ->
             AnnotationSpec(
@@ -425,9 +392,6 @@ object GenericColumnTypes {
         name = "SmallInteger",
 
         sqlalchemyTypeName = "SmallInteger",
-        sqlalchemyImports = listOf(
-            ImportDefinition("sqlalchemy.types", "SmallInteger"),
-        ),
 
         annotation = INT_ANNOTATION,
 
@@ -456,9 +420,6 @@ object GenericColumnTypes {
         parameters = STRING_LIKE_PARAMS,
 
         sqlalchemyTypeName = "String",
-        sqlalchemyImports = listOf(
-            ImportDefinition("sqlalchemy.types", "String"),
-        ),
 
         annotation = STR_ANNOTATION,
 
@@ -489,9 +450,6 @@ object GenericColumnTypes {
         parameters = STRING_LIKE_PARAMS,
 
         sqlalchemyTypeName = "Text",
-        sqlalchemyImports = listOf(
-            ImportDefinition("sqlalchemy.types", "Text"),
-        ),
 
         annotation = STR_ANNOTATION,
 
@@ -520,9 +478,6 @@ object GenericColumnTypes {
         ),
 
         sqlalchemyTypeName = "Time",
-        sqlalchemyImports = listOf(
-            ImportDefinition("sqlalchemy.types", "Time"),
-        ),
 
         annotation = TIME_ANNOTATION,
 
@@ -546,9 +501,6 @@ object GenericColumnTypes {
         parameters = STRING_LIKE_PARAMS,
 
         sqlalchemyTypeName = "Unicode",
-        sqlalchemyImports = listOf(
-            ImportDefinition("sqlalchemy.types", "Unicode"),
-        ),
 
         annotation = STR_ANNOTATION,
 
@@ -583,9 +535,6 @@ object GenericColumnTypes {
         parameters = STRING_LIKE_PARAMS,
 
         sqlalchemyTypeName = "UnicodeText",
-        sqlalchemyImports = listOf(
-            ImportDefinition("sqlalchemy.types", "UnicodeText"),
-        ),
 
         annotation = STR_ANNOTATION,
 
@@ -623,9 +572,6 @@ object GenericColumnTypes {
         ),
 
         sqlalchemyTypeName = "Uuid",
-        sqlalchemyImports = listOf(
-            ImportDefinition("sqlalchemy.types", "Uuid"),
-        ),
 
         annotation = { _, _ ->
             AnnotationSpec(type = "UUID", imports = listOf(ImportDefinition("uuid", "UUID")))
@@ -688,9 +634,6 @@ object GenericColumnTypes {
         parameters = ARRAY_LIKE_PARAMS,
 
         sqlalchemyTypeName = "ARRAY",
-        sqlalchemyImports = listOf(
-            ImportDefinition("sqlalchemy.types", "ARRAY"),
-        ),
 
         annotation = ARRAY_ANNOTATION,
 
@@ -765,7 +708,6 @@ object GenericColumnTypes {
         ),
 
         sqlalchemyTypeName = "JSON",
-        sqlalchemyImports = listOf(ImportDefinition("sqlalchemy.types", "JSON")),
 
         annotation = DICT_ANNOTATION,
         sqlAliases = listOf(SqlAlias("JSON")),
